@@ -5,6 +5,7 @@ RUN apt-get update && apt-get install -y \
     ffmpeg \
     curl \
     gnupg \
+    lsb-release \
     dnsutils \
     && rm -rf /var/lib/apt/lists/*
 
@@ -12,6 +13,9 @@ RUN apt-get update && apt-get install -y \
 RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
+
+# Verifikasi bahwa Node.js terinstall dengan benar (Wajib agar yt-dlp bekerja)
+RUN node -v && npm -v
 
 # 3. Security & Environment Setup
 RUN useradd -m -u 1000 user
