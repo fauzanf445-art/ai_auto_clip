@@ -111,6 +111,7 @@ class YouTubeAdapter(IMediaDownloader):
             'logger': YtDlpLogger(),
             'remote_components': ['ejs:npm', 'ejs:github'],
             'js_runtimes': {'node': {}},
+            'force_ipv4': True,
         }
 
         if self.cookies_path:

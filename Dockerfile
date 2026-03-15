@@ -5,6 +5,7 @@ RUN apt-get update && apt-get install -y \
     ffmpeg \
     curl \
     gnupg \
+    dnsutils \
     && rm -rf /var/lib/apt/lists/*
 
 # 2. Install Node.js
@@ -14,7 +15,9 @@ RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
 
 # 3. Security & Environment Setup
 RUN useradd -m -u 1000 user
-USER user
+# USER user
+# (Komentar: Kita matikan user default saat build agar CMD bisa berjalan sebagai root untuk fix DNS)
+
 ENV HOME=/home/user \
     PATH=/home/user/.local/bin:$PATH \
     PYTHONUNBUFFERED=1 \
@@ -33,7 +36,11 @@ COPY --chown=user . .
 # 6. Create Directories
 RUN mkdir -p Temp Output models/whispermodels models/mpmodels files logs fonts resources/prompts
 
+# Fix permission: Karena kita build sebagai root, pastikan folder milik user 1000
+RUN chown -R user:user $HOME
+
 EXPOSE 7860
 
 # Pastikan app.py dijalankan dalam mode web
-CMD ["python", "app.py", "--web"]
+# Trik: Inject Google DNS ke resolv.conf, lalu switch ke user biasa untuk jalankan app
+CMD ["/bin/bash", "-c", "echo 'nameserver 8.8.8.8' > /etc/resolv.conf && su user -c 'python app.py --web'"]
