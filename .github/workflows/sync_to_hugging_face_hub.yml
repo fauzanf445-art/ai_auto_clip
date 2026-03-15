@@ -1,0 +1,22 @@
+name: Sync to Hugging Face Hub
+on:
+  push:
+    branches: [main] # Menjalankan action setiap ada push ke branch main
+
+  # Mengizinkan menjalankan workflow ini secara manual dari tab Actions
+  workflow_dispatch:
+
+jobs:
+  sync-to-hub:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          lfs: true
+
+      - name: Push to hub
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          git push --force https://ujangg:$HF_TOKEN@huggingface.co/spaces/ujangg/klipbot main

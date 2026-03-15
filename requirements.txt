@@ -1,0 +1,10 @@
+gradio
+faster-whisper
+google-genai
+mediapipe
+numpy
+opencv-contrib-python
+python-dotenv
+torch
+tqdm
+yt-dlp
