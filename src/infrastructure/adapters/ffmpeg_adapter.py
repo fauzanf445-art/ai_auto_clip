@@ -6,7 +6,7 @@ from typing import List, Optional, Callable, Tuple
 
 from src.domain.interfaces import IVideoProcessor
 from src.domain.exceptions import VideoProcessingError
-from src.infrastructure.common.utils import JsonCache
+from src.infrastructure.common.utils import JsonCache, find_executable
 
 class FFmpegAdapter(IVideoProcessor):
     """
@@ -28,8 +28,8 @@ class FFmpegAdapter(IVideoProcessor):
     # Argumen video CPU sebagai fallback
     CPU_VIDEO_ARGS = ['-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p']
 
-    def __init__(self, bin_path: str = "ffmpeg", cache_path: Optional[Path] = None):
-        self.bin_path = bin_path
+    def __init__(self, cache_path: Optional[Path] = None):
+        self.bin_path = find_executable("ffmpeg")
         self.cache_path = cache_path
         self._video_args: List[str] = []
         self._common_args: List[str] = []

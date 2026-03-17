@@ -3,6 +3,9 @@ import logging
 import re
 from pathlib import Path
 from typing import Any, Optional
+import shutil
+
+from src.domain.exceptions import ExecutableNotFoundError
 
 class JsonCache:
     """Utilitas untuk menangani cache data dalam format JSON."""
@@ -34,3 +37,20 @@ def sanitize_filename(name: str) -> str:
     raw_safe = re.sub(r'[^\w\s\-_]', '', name).strip()
     # Ganti beberapa spasi atau karakter whitespace lainnya menjadi satu spasi tunggal
     return re.sub(r'\s+', ' ', raw_safe)
+
+def find_executable(name: str) -> str:
+    """
+    Mencari path absolut untuk sebuah executable di sistem.
+
+    Raises:
+        ExecutableNotFoundError: Jika executable tidak ditemukan di PATH.
+    """
+    path = shutil.which(name)
+    if path is None:
+        raise ExecutableNotFoundError(
+            f"Executable '{name}' tidak ditemukan di PATH sistem. "
+            f"Harap pastikan '{name}' sudah terinstall dan bisa diakses secara global. "
+            "Lihat README.md untuk instruksi instalasi."
+        )
+    logging.info(f"✅ Ditemukan executable '{name}' di: {path}")
+    return path

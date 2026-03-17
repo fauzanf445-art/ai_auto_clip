@@ -18,9 +18,10 @@ class TqdmLoggingHandler(logging.Handler):
         except Exception:
             self.handleError(record)
 
-def setup_logging(log_file: Path):
-    # Pastikan folder logs ada
+def setup_logging(log_file: Path, verbose: bool = False):
     log_file.parent.mkdir(parents=True, exist_ok=True)
+
+    console_level = logging.DEBUG if verbose else logging.INFO
 
     logging_config = {
         'version': 1,
@@ -47,7 +48,7 @@ def setup_logging(log_file: Path):
             'console': {
                 'class': 'src.common.TqdmLoggingHandler',
                 'formatter': 'console_format',
-                'level': logging.INFO,
+                'level': console_level,
             },
         },
         'root': {

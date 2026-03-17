@@ -7,11 +7,8 @@ RUN apt-get update && apt-get install -y \
     gnupg \
     lsb-release \
     dnsutils \
-    && rm -rf /var/lib/apt/lists/*
-
-# 2. Install Node.js
-RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
-    && apt-get install -y nodejs \
+    nodejs \
+    npm \
     && rm -rf /var/lib/apt/lists/*
 
 # Verifikasi bahwa Node.js terinstall dengan benar (Wajib agar yt-dlp bekerja)

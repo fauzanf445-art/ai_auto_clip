@@ -9,7 +9,8 @@ import yt_dlp
 from tqdm import tqdm
 
 from src.domain.interfaces import IMediaDownloader
-from src.domain.exceptions import MediaDownloadError
+from src.domain.exceptions import MediaDownloadError, ExecutableNotFoundError
+from src.infrastructure.common.utils import find_executable
 
 class YtDlpLogger:
     """
@@ -46,6 +47,14 @@ class YouTubeAdapter(IMediaDownloader):
     def __init__(self, cookies_path: Optional[Union[str, Path]] = None):
         self.cookies_path = cookies_path
         self._info_cache: Dict[str, Dict[str, Any]] = {}
+        self._node_available: bool = False
+        try:
+            # Validasi keberadaan node di PATH sistem tanpa menyimpan path absolutnya.
+            find_executable("node")
+            self._node_available = True
+        except ExecutableNotFoundError:
+            logging.warning("⚠️ Executable 'node' tidak ditemukan. Beberapa video YouTube mungkin gagal diunduh.")
+            self._node_available = False
 
     @staticmethod
     def extract_cookies_from_browser(target_path: Path) -> bool:
@@ -110,9 +119,13 @@ class YouTubeAdapter(IMediaDownloader):
             'nocheckcertificate': True,
             'logger': YtDlpLogger(),
             'remote_components': ['ejs:npm', 'ejs:github'],
-            'js_runtimes': {'node': {}},
             'force_ipv4': True,
         }
+
+        # Aktifkan runtime 'node' dengan nama command saja (tanpa path absolut).
+        # Ini mengandalkan PATH sistem dan kompatibel dengan lingkungan venv/container.
+        if self._node_available:
+            opts['js_runtimes'] = {'node': {}}
 
         if self.cookies_path:
             path_obj = Path(self.cookies_path)

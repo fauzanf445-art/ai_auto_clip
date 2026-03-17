@@ -3,12 +3,14 @@ import argparse
 import logging
 from dotenv import load_dotenv
 import gradio as gr
+from typing import List, Any
 
 # Config & UI
 from src.config import AppConfig
 from src.infrastructure.cli_ui import ConsoleUI
 from src.common import setup_logging
 from src.container import Container
+from src.infrastructure.common.utils import sanitize_filename
 
 class GradioUI(ConsoleUI):
     """Antarmuka Gradio yang kompatibel dengan antarmuka ConsoleUI."""
@@ -27,6 +29,22 @@ class GradioUI(ConsoleUI):
         # Di mode Web, kita asumsikan default adalah AI Analysis 
         # kecuali ditambahkan input khusus di UI Gradio
         return None
+
+    def show_error(self, msg: str):
+        super().show_error(msg)
+        self.log_output += f"❌ ERROR: {msg}\n"
+
+    def show_success(self, output_dir, clips):
+        super().show_success(output_dir, clips)
+        self.log_output += "\n" + "="*40 + "\n"
+        self.log_output += "✨ PROSES SELESAI!\n"
+        self.log_output += f"📂 Folder Output: {output_dir}\n"
+        if clips:
+             self.log_output += f"🎬 {len(clips)} Klip Berhasil Dibuat:\n"
+             for c in clips:
+                 self.log_output += f"   - {c.name}\n"
+        else:
+             self.log_output += "⚠️ Tidak ada klip yang dihasilkan.\n"
 
 def process_via_web(url, api_key):
     """Fungsi jembatan antara Gradio UI dan Orchestrator."""
@@ -58,7 +76,8 @@ def process_via_web(url, api_key):
         container.orchestrator.run(url)
         
         # Mencari file hasil di folder output
-        safe_name = container.provider_service.get_video_metadata(url).get('title', 'Unknown_Video')
+        raw_title = container.provider_service.get_video_metadata(url).get('title', 'Unknown_Video')
+        safe_name = sanitize_filename(raw_title)
         output_folder = config.paths.OUTPUT_DIR / safe_name
         video_files = list(output_folder.glob("final_*.mp4"))
         
@@ -79,6 +98,7 @@ def main():
     parser.add_argument("url", nargs="?", help="URL Video YouTube yang akan memproses")
     parser.add_argument("--extract-cookies", action="store_true", help="Ekstrak cookies dari browser lokal")
     parser.add_argument("--web", action="store_true", help="Jalankan antarmuka Gradio")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Tampilkan log DEBUG di terminal")
     args = parser.parse_args()
 
     config = AppConfig()
@@ -113,7 +133,7 @@ def main():
         return
 
     setup_environment(config)
-    setup_logging(config.paths.LOG_FILE)
+    setup_logging(config.paths.LOG_FILE, verbose=args.verbose)
     
     ui = ConsoleUI()
     ui.print_banner()

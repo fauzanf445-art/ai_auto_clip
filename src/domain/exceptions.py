@@ -2,6 +2,10 @@ class HSUAIClipError(Exception):
     """Base exception class for HSUAIClip application."""
     pass
 
+class ExecutableNotFoundError(HSUAIClipError):
+    """Raised when a required external executable (e.g., ffmpeg, node) is not found."""
+    pass
+
 class MediaDownloadError(HSUAIClipError):
     """Raised when media download or metadata extraction fails."""
     pass

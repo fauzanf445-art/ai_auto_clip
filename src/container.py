@@ -26,7 +26,6 @@ class Container:
         
         # Gunakan 'ffmpeg' yang diasumsikan ada di PATH sistem
         self.ffmpeg_adapter = FFmpegAdapter(
-            bin_path="ffmpeg",
             cache_path=config.paths.FFMPEG_CACHE_FILE
         )
         
