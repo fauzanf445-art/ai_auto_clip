@@ -105,6 +105,19 @@ class EditorService:
             logging.debug(f"♻️ Subtitle .ass cached: {output_path.name}")
             return output_path
 
-        # transcription_cache_path = cache_dir / f"{Path(clip_audio_path).stem}_transcript.json"
-        # transcription_data = self._get_transcription_data(clip_audio_path, transcription_cache_path)
-        return None
+        try:
+            # 1. Transkripsi Audio (Extract words)
+            transcription = self.transcriber.transcribe(clip_audio_path)
+            
+            # 2. Tulis ke format ASS
+            self.writer.write_karaoke_subtitles(
+                transcription_data=transcription,
+                output_path=str(output_path),
+                chunk_size=chunk_size,
+                play_res_x=video_width,
+                play_res_y=video_height
+            )
+            return output_path
+        except Exception as e:
+            logging.error(f"❌ Gagal membuat subtitle untuk {Path(clip_audio_path).name}: {e}")
+            return None

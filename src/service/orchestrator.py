@@ -193,10 +193,14 @@ class Orchestrator:
         def _process_render(item: Tuple[Path, TrackResult]) -> Optional[Path]:
             original_path, track_res = item
             try:
-                sub_path = final_dir / "subs" / f"{original_path.stem}.ass"
+                sub_path = work_dir / "subs" / f"{original_path.stem}.ass"
                 self.editor.generate_subtitles_for_clip(
-                    str(original_path), str(sub_path), work_dir, 
-                    self.config.karaoke_chunk_size, track_res['width'], track_res['height']
+                    str(original_path), 
+                    str(sub_path), 
+                    work_dir, 
+                    self.config.karaoke_chunk_size, 
+                    track_res['width'], 
+                    track_res['height']
                 )
 
                 final_out = final_dir / f"final_{original_path.name}"
