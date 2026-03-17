@@ -187,7 +187,7 @@ class Orchestrator:
             max_workers = 1
             logging.info("🚀 GPU Encoder terdeteksi: Rendering final dibatasi 1 worker.")
         else:
-            max_workers = os.cpu_count() or 2
+            max_workers = 2
             logging.info(f"⚙️ CPU Encoder terdeteksi: Rendering final menggunakan {max_workers} worker.")
 
         def _process_render(item: Tuple[Path, TrackResult]) -> Optional[Path]:

@@ -1,5 +1,4 @@
 import logging
-import os
 import concurrent.futures
 from pathlib import Path
 from typing import List, Optional, Callable
@@ -26,7 +25,7 @@ class EditorService:
             max_workers = 1 
             logging.info("🚀 GPU Encoder terdeteksi: Membatasi proses paralel ke 1 worker untuk stabilitas.")
         else:
-            max_workers = os.cpu_count() or 2
+            max_workers = 2
             logging.info(f"⚙️ CPU Encoder terdeteksi: Menggunakan {max_workers} worker paralel.")
 
         output_dir.mkdir(parents=True, exist_ok=True)
