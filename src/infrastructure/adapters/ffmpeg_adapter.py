@@ -163,9 +163,9 @@ class FFmpegAdapter(IVideoProcessor):
             )
             
             if process.returncode != 0:
-                logging.debug(f"❌ FFmpeg Failure Log ({description}):\n{process.stderr}")
-                return False
-                
+                error_tail = "\n".join(process.stderr.splitlines()[-20:])
+                logging.error(f"❌ FFmpeg Error ({description}):\n... [Log dipotong] ...\n{error_tail}")
+                return False                
             return True
         except Exception as e:
             logging.error(f"❌ Exception saat menjalankan FFmpeg ({description}): {e}")
