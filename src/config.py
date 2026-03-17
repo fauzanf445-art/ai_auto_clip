@@ -1,6 +1,7 @@
 import urllib.request
 from pathlib import Path
 from dataclasses import dataclass, field
+from typing import List
 
 @dataclass
 class SubtitleConfig:
@@ -82,8 +83,15 @@ class AppConfig:
     # Pastikan menggunakan default_factory (ini yang memperbaiki error mutable default)
     paths: AppPaths = field(default_factory=AppPaths)
     
-    # AI Config
-    gemini_model: str = "gemini-flash-latest"
+    gemini_models: List[str] = field(default_factory=lambda: [
+        "gemini-flash-latest",
+        "gemini-pro-latest",
+        "gemini-2.5-flash",
+        "gemini-3.1-flash-lite-preview",
+        "gemini-3-flash-preview",
+        "gemini-3.1-pro-preview"
+        ]    
+    )
     
     # Motion Tracking
     motion_window_size: int = 5

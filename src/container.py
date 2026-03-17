@@ -29,7 +29,7 @@ class Container:
             cache_path=config.paths.FFMPEG_CACHE_FILE
         )
         
-        self.gemini_adapter = GeminiAdapter(api_key=api_key, model_name=config.gemini_model)
+        self.gemini_adapter = GeminiAdapter(api_key=api_key, model_names=config.gemini_models)
         
         whisper_hw = WhisperAdapter.detect_hardware()
         self.whisper_adapter = WhisperAdapter(**whisper_hw, download_root=str(config.paths.WHISPER_MODELS_DIR))

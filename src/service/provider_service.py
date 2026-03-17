@@ -83,7 +83,6 @@ class ProviderService:
             return None
         
         try:
-            # Rekonstruksi objek Domain dari JSON (Manual Mapping)
             clips = []
             clips = [Clip.from_dict(c_data) for c_data in data.get('clips', [])]
 

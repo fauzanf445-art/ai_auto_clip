@@ -14,9 +14,10 @@ from src.domain.interfaces import IContentAnalyzer
 from src.domain.models import VideoSummary, Clip
 
 class GeminiAdapter(IContentAnalyzer):
-    def __init__(self, api_key: str, model_name: str):
+    def __init__(self, api_key: str, model_names: List[str]):
         self.api_key = api_key
-        self.model_name = f"models/{model_name}"
+        # Pastikan format nama model benar (diawali 'models/')
+        self.model_names = [f"models/{m}" if not m.startswith("models/") else m for m in model_names]
         self.client: genai.Client = genai.Client(api_key=self.api_key)
 
     @staticmethod
@@ -137,35 +138,53 @@ class GeminiAdapter(IContentAnalyzer):
                 required=["video_title", "audio_energy_profile", "clips"]
             )
 
-            # 4. Request ke Gemini
-            logging.debug("Mengirim permintaan multimodal ke Gemini...")
+            # 4. Request ke Gemini dengan Fallback Strategy
+            last_exception = None
             
-            response: types.GenerateContentResponse = self.client.models.generate_content(
-                model=self.model_name,
-                contents=types.Content(
-                    role="user",
-                    parts=request_parts
-                )
-,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=summary_schema
-                )
-            )
+            for model_target in self.model_names:
+                try:
+                    logging.debug(f"🧠 Mengirim permintaan ke Gemini ({model_target})...")
+                    
+                    response: types.GenerateContentResponse = self.client.models.generate_content(
+                        model=model_target,
+                        contents=types.Content(
+                            role="user",
+                            parts=request_parts
+                        ),
+                        config=types.GenerateContentConfig(
+                            response_mime_type="application/json",
+                            response_schema=summary_schema
+                        )
+                    )
 
-            # 5. Parse JSON dan Mapping ke Domain Models
-            clean_text = self._clean_json_text(str(response.text))
-            data = json.loads(clean_text)
+                    clean_text = self._clean_json_text(str(response.text))
+                    data = json.loads(clean_text)
 
-            clips_list = []
-            for c_data in data.get('clips', []):
-                clips_list.append(Clip.from_dict(c_data))
+                    clips_list = []
+                    for c_data in data.get('clips', []):
+                        clips_list.append(Clip.from_dict(c_data))
 
-            return VideoSummary(
-                video_title=data.get('video_title', 'Unknown Video'),
-                audio_energy_profile=data.get('audio_energy_profile', ''),
-                clips=clips_list
-            )
+                    logging.info(f"✅ Analisis berhasil menggunakan model: {model_target}")
+                    return VideoSummary(
+                        video_title=data.get('video_title', 'Unknown Video'),
+                        audio_energy_profile=data.get('audio_energy_profile', ''),
+                        clips=clips_list
+                    )
+
+                except Exception as e:
+                    error_msg = str(e)
+                    if "503" in error_msg or "429" in error_msg or "UNAVAILABLE" in error_msg:
+                        logging.warning(f"⚠️ Model {model_target} sibuk/limit: {e}. Mencoba model berikutnya...")
+                        last_exception = e
+                        time.sleep(2)
+                        continue
+                    else:
+                        raise e
+            
+            if last_exception:
+                raise last_exception
+            
+            raise RuntimeError("Analisis konten gagal: Tidak ada respons sukses dari daftar model yang tersedia.")
 
         except Exception as e:
             logging.error(f"Gemini Adapter Error: {e}")
