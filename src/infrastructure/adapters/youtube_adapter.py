@@ -99,7 +99,6 @@ class YouTubeAdapter(IMediaDownloader):
             except Exception as e:
                 logging.error(f"Gagal menyimpan cookies dari Env: {e}")
 
-        # Jangan mencoba ekstraksi browser jika berjalan di Hugging Face/Docker
         if os.getenv("SPACE_ID"):
             logging.warning("⚠️ Berjalan di lingkungan Cloud. Ekstraksi cookies browser dilewati.")
             return None
@@ -122,8 +121,10 @@ class YouTubeAdapter(IMediaDownloader):
             'force_ipv4': True,
         }
 
-        # Aktifkan runtime 'node' dengan nama command saja (tanpa path absolut).
-        # Ini mengandalkan PATH sistem dan kompatibel dengan lingkungan venv/container.
+        if proxy_url := os.getenv('PROXY_URL'):
+            opts['proxy'] = proxy_url
+            logging.info("🌐 Menggunakan proxy yang dikonfigurasi dari environment.")
+
         if self._node_available:
             opts['js_runtimes'] = {'node': {}}
 
@@ -194,7 +195,6 @@ class YouTubeAdapter(IMediaDownloader):
             
             out_tmpl = out_path / f"{filename_prefix}.%(ext)s"
             
-            # TQDM Progress Hook untuk yt-dlp
             pbar = None
             def tqdm_hook(d):
                 nonlocal pbar
