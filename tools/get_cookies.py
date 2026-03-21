@@ -12,7 +12,11 @@ except ImportError:
 
 try:
     sys.path.append(str(Path(__file__).parent.parent))
+    from src.config import AppConfig
+    from src.infrastructure.ui.logging_config import TqdmLogger
     from src.infrastructure.adapters.youtube_adapter import YouTubeAdapter
+    from src.infrastructure.common.filesystem import SystemHelper
+    from src.application.services.auth_service import AuthService
 except ImportError:
     print("❌ Error Import: Tidak dapat menemukan modul 'src'.")
     print("👉 Harap jalankan script ini dari root folder project sebagai modul:")
@@ -40,7 +44,19 @@ def main():
     print(f"📂 Target Output: {cookies_file}")
     print("⏳ Memulai ekstraksi...\n")
 
-    success = YouTubeAdapter.extract_cookies_from_browser(cookies_file)
+    # Inisialisasi dependensi minimal untuk AuthService
+    config = AppConfig()
+    logger = TqdmLogger(config.paths.LOG_FILE)
+    system = SystemHelper(logger)
+    
+    ytdlp_path = system.find_executable("yt-dlp")
+    yt_adapter = YouTubeAdapter(
+        yt_dlp_path=ytdlp_path,
+        logger=logger
+    )
+
+    auth_service = AuthService(cookie_extractor=yt_adapter, logger=logger)
+    success = auth_service.extract_cookies_from_browser(cookies_file)
 
     print("-" * 50)
     if success:

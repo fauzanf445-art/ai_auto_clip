@@ -1,48 +1,31 @@
+from pathlib import Path
+from typing import Optional, Callable
+
 import cv2
 import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 import numpy as np
-import logging
-import urllib.request
-from pathlib import Path
-from typing import Optional, Callable
 
-from src.domain.interfaces import IFaceTracker, TrackResult
+from src.domain.interfaces import IFaceTracker, TrackResult, IRetryHandler, ILogger
+from src.domain.exceptions import VideoProcessingError
 
 class MediaPipeAdapter(IFaceTracker):
     """
     Implementasi IFaceTracker menggunakan MediaPipe Face Landmarker (Tasks API).
     """
 
-    MODEL_URL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
-
-    def __init__(self, model_path: str, window_size: int = 5, process_every_n_frames: int = 3):
+    def __init__(self, model_path: str, retry_handler: IRetryHandler, logger: ILogger, window_size: int = 5, process_every_n_frames: int = 3):
         self.model_path = model_path
+        self.retry_handler = retry_handler
+        self.logger = logger
         self.window_size = window_size
         self.process_every_n_frames = process_every_n_frames
         self._gpu_fallback_logged = False
 
         # Cek model file
         if not Path(model_path).exists():
-            logging.warning(f"⚠️ Model MediaPipe tidak ditemukan di: {model_path}")
-            self._download_model(Path(model_path))
-
-    def _download_model(self, target_path: Path):
-        """Mengunduh model Face Landmarker dari Google Storage."""
-        logging.info(f"⬇️ Sedang mengunduh model dari: {self.MODEL_URL}")
-        try:
-            target_path.parent.mkdir(parents=True, exist_ok=True)
-            with urllib.request.urlopen(self.MODEL_URL) as response:
-                if response.status == 200:
-                    with open(target_path, 'wb') as f:
-                        f.write(response.read())
-                    logging.info("✅ Download model selesai.")
-                else:
-                    raise IOError(f"HTTP Error: {response.status}")
-        except Exception as e:
-            logging.error(f"❌ Gagal mengunduh model: {e}")
-            raise RuntimeError("Gagal mengunduh model MediaPipe. Periksa koneksi internet.")
+            raise VideoProcessingError(f"Model MediaPipe tidak ditemukan di: {model_path}")
 
     def track_and_crop(self, input_path: str, output_path: str, progress_callback: Optional[Callable[[int, int], None]] = None) -> TrackResult:
         # Setup MediaPipe Tasks
@@ -65,13 +48,13 @@ class MediaPipeAdapter(IFaceTracker):
                 min_tracking_confidence=0.5
             )
             landmarker = FaceLandmarker.create_from_options(options)
-            logging.info("🚀 MediaPipe: Menggunakan GPU Delegate.")
+            self.logger.info("🚀 MediaPipe: Menggunakan GPU Delegate.")
         except Exception as e:
             if not self._gpu_fallback_logged:
-                logging.warning(f"⚠️ MediaPipe GPU gagal. Fallback ke CPU (Pesan ini hanya muncul sekali).")
+                self.logger.warning(f"⚠️ MediaPipe GPU gagal. Fallback ke CPU (Pesan ini hanya muncul sekali).")
                 self._gpu_fallback_logged = True
             
-            logging.debug(f"⚠️ MediaPipe GPU gagal ({e}). Fallback ke CPU.")
+            self.logger.debug(f"⚠️ MediaPipe GPU gagal ({e}). Fallback ke CPU.")
             # Fallback ke CPU
             base_options = BaseOptions(model_asset_path=self.model_path, delegate=BaseOptions.Delegate.CPU)
             options = FaceLandmarkerOptions(
@@ -90,7 +73,7 @@ class MediaPipeAdapter(IFaceTracker):
         try:
             cap = cv2.VideoCapture(input_path)
             if not cap.isOpened():
-                raise RuntimeError(f"Gagal membuka video: {input_path}")
+                raise VideoProcessingError(f"Gagal membuka video input: {input_path}")
 
             # Properti Video Asli
             orig_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -102,7 +85,7 @@ class MediaPipeAdapter(IFaceTracker):
 
             # Validasi dimensi video
             if orig_width == 0 or orig_height == 0:
-                raise RuntimeError(f"Gagal membaca dimensi video dari {input_path}. File mungkin korup.")
+                raise VideoProcessingError(f"Dimensi video tidak valid ({orig_width}x{orig_height}) pada {input_path}")
 
             # Setup Output Video (9:16)
             target_aspect_ratio = 9 / 16
@@ -175,15 +158,15 @@ class MediaPipeAdapter(IFaceTracker):
                 if progress_callback:
                     progress_callback(frame_idx, total_frames)
 
-            return {
-                "tracked_video": output_path,
-                "width": out_width,
-                "height": out_height
-            }
+            return TrackResult(
+                tracked_video=str(output_path),
+                width=out_width,
+                height=out_height
+            )
 
         except Exception as e:
-            logging.error(f"Error during video processing: {e}", exc_info=True)
-            raise
+            self.logger.error(f"Error during video processing: {e}", exc_info=True)
+            raise VideoProcessingError(f"Gagal melakukan tracking wajah: {e}", original_exception=e)
         finally:
             # 6. Cleanup Resource (Mencegah OOM)
             if landmarker:

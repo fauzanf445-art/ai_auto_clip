@@ -8,20 +8,25 @@ from dotenv import load_dotenv
 
 # Config & UI
 from src.config import AppConfig
-from src.infrastructure.cli_ui import ConsoleUI
+from src.infrastructure.ui.console import ConsoleUI
+from src.bootstrap import Bootstrap
 from src.container import Container
+from src.infrastructure.adapters.gemini_adapter import GeminiAdapter
+from src.application.context import SessionContext
+from src.infrastructure.ui.progress import LogProgressReporter
+from src.domain.models import Clip
 
 # --- Konfigurasi Tes ---
 # Gunakan video pendek dan publik untuk konsistensi
 TEST_URL = "https://www.youtube.com/watch?v=jNQXAC9IVRw" # "Me at the zoo"
-TEST_VIDEO_SAFE_NAME = "Me at the zoo"
+TEST_VIDEO_SAFE_NAME = "Me_at_the_zoo" # Sesuai sanitasi YouTubeAdapter (spasi -> underscore)
 
 # Muat API key dari .env
 load_dotenv()
 API_KEY = os.getenv("GEMINI_API_KEY")
 
 @unittest.skipIf(not API_KEY, "GEMINI_API_KEY tidak ditemukan di .env. Tes integrasi dilewati.")
-class TestFullPipeline(unittest.TestCase):
+class TestSystemIntegration(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
@@ -35,7 +40,7 @@ class TestFullPipeline(unittest.TestCase):
 
         # Replikasi setup environment yang sekarang ada di main.py
         # untuk memastikan test berjalan dalam kondisi yang sama.
-        cls.config.paths.create_dirs()
+        Bootstrap.setup_directories(cls.config)
 
         cls.ui = ConsoleUI() # Kita tetap butuh instance-nya, meski tidak akan menampilkan ke user
 
@@ -44,11 +49,12 @@ class TestFullPipeline(unittest.TestCase):
         shutil.rmtree(cls.config.paths.OUTPUT_DIR / TEST_VIDEO_SAFE_NAME, ignore_errors=True)
 
         # Inisialisasi via Container
-        cls.container = Container(cls.config, cls.ui, API_KEY)
+        cls.container = Container(cls.config)
         
         # Pastikan cookies di-setup dari environment variable (Secret)
-        cls.container.yt_adapter.check_and_setup_cookies(cls.config.paths.COOKIE_FILE)
+        cls.container.auth_service.check_and_setup_cookies(cls.config.paths.COOKIE_FILE)
         cls.orchestrator = cls.container.orchestrator
+        cls.provider = cls.container.provider_service
 
     @classmethod
     def tearDownClass(cls):
@@ -61,21 +67,40 @@ class TestFullPipeline(unittest.TestCase):
         print(f"Dihapus: {temp_dir}")
         print(f"Dihapus: {output_dir}")
 
-    def test_run_pipeline_end_to_end_with_manual_clip(self):
+    def test_1_gemini_integration(self):
+        """Verifikasi bahwa Gemini API Key valid dan service dapat dihubungi."""
+        is_valid = GeminiAdapter.check_key_validity(API_KEY or "")
+        self.assertTrue(is_valid, "Gemini API Key validasi gagal (cek koneksi/kuota).")
+
+    def test_2_youtube_integration(self):
+        """Verifikasi kemampuan mengambil metadata dari YouTube."""
+        # Tes ini memastikan yt-dlp bekerja dan internet terhubung
+        safe_title = self.provider.get_safe_folder_name(TEST_URL)
+        self.assertIsNotNone(safe_title)
+        # Verifikasi sanitasi nama folder (pastikan spasi diganti underscore)
+        self.assertEqual(safe_title, TEST_VIDEO_SAFE_NAME)
+
+    def test_3_run_pipeline_end_to_end_with_manual_clip(self):
         """
         Menjalankan pipeline lengkap dari awal hingga akhir menggunakan mode manual
         untuk mempercepat proses (menghindari panggilan AI yang mahal dan lama).
         """
         # Arrange
-        # Kita "memalsukan" input pengguna untuk mode manual.
-        # UI sekarang mengembalikan dictionary, bukan objek Clip.
-        with patch.object(self.ui, 'get_manual_clips') as mock_get_manual:
-            # Ini akan memotong video dari detik ke-2 hingga ke-7
-            manual_timestamps = [{'start_time': 2.0, 'end_time': 7.0}]
-            mock_get_manual.return_value = manual_timestamps
+        # Kita "memalsukan" input pengguna dengan mem-patch metode di orchestrator
+        # agar langsung mengembalikan objek Clip tanpa interaksi UI.
+        manual_clip = Clip.create_manual(0, 2.0, 5.0)
+
+        with patch.object(self.orchestrator, '_try_get_manual_clips', return_value=[manual_clip]):
+
+            # Create context for the run
+            ctx = SessionContext(
+                ui=self.ui,
+                api_key=API_KEY or "",
+                progress_reporter=LogProgressReporter(self.container.logger)
+            )
 
             # Act
-            self.orchestrator.run(TEST_URL)
+            self.orchestrator.run(ctx, TEST_URL)
 
         # Assert
         # Verifikasi bahwa file output benar-benar dibuat

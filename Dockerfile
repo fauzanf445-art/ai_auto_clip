@@ -44,4 +44,4 @@ EXPOSE 7860
 
 # Pastikan app.py dijalankan dalam mode web
 # Trik: Inject Google DNS ke resolv.conf, lalu switch ke user biasa untuk jalankan app
-CMD ["/bin/bash", "-c", "echo 'nameserver 8.8.8.8' > /etc/resolv.conf && su user -c 'python app.py --web'"]
+CMD ["/bin/bash", "-c", "echo 'nameserver 8.8.8.8' > /etc/resolv.conf && su user -c 'python run.py --web'"]

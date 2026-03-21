@@ -1,286 +1,204 @@
-import json
-import os
-import urllib.request
-import logging
+import subprocess
 from pathlib import Path
-from typing import Optional, Dict, Any, cast, Union, Tuple
+from typing import Optional, Dict, Any, Union
 
-import yt_dlp
-from tqdm import tqdm
+from src.domain.interfaces import IMediaDownloader, ICookieExtractor, ILogger
+from src.domain.exceptions import MediaDownloadError, RateLimitError
 
-from src.domain.interfaces import IMediaDownloader
-from src.domain.exceptions import MediaDownloadError, ExecutableNotFoundError
-from src.infrastructure.common.utils import find_executable
-
-class YtDlpLogger:
-    """
-    A custom logger to redirect yt-dlp's output to Python's standard logging
-    module. This allows us to capture detailed error messages from yt-dlp
-    when a download fails, without cluttering the console during normal operation.
-    """
-    def debug(self, msg: str):
-        # yt-dlp sends both info and debug messages to this method.
-        # We can filter based on the prefix.
-        if msg.startswith('[debug] '):
-            logging.getLogger('yt-dlp').debug(msg)
-        else:
-            # These are info-level messages (e.g., '[youtube] Extracting URL').
-            # We log them to a dedicated logger, which can be silenced by default.
-            logging.getLogger('yt-dlp').info(msg)
-
-    def warning(self, msg: str):
-        # Filter peringatan berulang yang tidak kritis
-        if "n challenge" in msg or "challenge solving failed" in msg:
-            logging.getLogger('yt-dlp').debug(msg)
-        else:
-            logging.getLogger('yt-dlp').warning(msg)
-
-    def error(self, msg: str):
-        logging.getLogger('yt-dlp').error(msg)
-
-class YouTubeAdapter(IMediaDownloader):
+class YouTubeAdapter(IMediaDownloader, ICookieExtractor):
     """
     Implementasi IMediaDownloader menggunakan yt-dlp.
     Menangani interaksi dengan YouTube: Metadata, Stream URL, Audio Download, dan Cookies.
     """
 
-    def __init__(self, cookies_path: Optional[Union[str, Path]] = None):
+    def __init__(self, yt_dlp_path: str, logger: ILogger, node_path: Optional[str] = None, cookies_path: Optional[Union[str, Path]] = None):
         self.cookies_path = cookies_path
-        self._info_cache: Dict[str, Dict[str, Any]] = {}
-        self._node_available: bool = False
+        self._info_cache: Dict[str, Any] = {}
+        self.bin_path = yt_dlp_path
+        self.logger = logger
+
+        self.base_cli_args = [
+            '--force-ipv4',
+            '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            '--no-warnings',
+            '--no-check-certificate',
+            '--replace-in-metadata', 'title', '[<>:"/\\\\|?*]', '',
+            '--replace-in-metadata', 'title', '[\\s\\.]+', '_',
+            '--replace-in-metadata', 'title', '[^a-zA-Z0-9_]', '',
+            '--retries', '10',
+            '--fragment-retries', '10',
+            '--retry-sleep', 'exp=1:20'
+        ]
+        if self.cookies_path and Path(self.cookies_path).exists():
+            self.base_cli_args.extend(['--cookies', str(self.cookies_path)])
+
+        if node_path is None:
+            self.logger.warning("⚠️ Executable 'node' tidak ditemukan/diberikan. Beberapa video YouTube mungkin gagal diunduh.")
+
+    def _execute_command(self, cmd: list, timeout: int = 300, require_stdout: bool = False) -> str:
+        """Helper internal untuk menjalankan command subprocess dengan handling standar."""
         try:
-            # Validasi keberadaan node di PATH sistem tanpa menyimpan path absolutnya.
-            find_executable("node")
-            self._node_available = True
-        except ExecutableNotFoundError:
-            logging.warning("⚠️ Executable 'node' tidak ditemukan. Beberapa video YouTube mungkin gagal diunduh.")
-            self._node_available = False
-
-    @staticmethod
-    def extract_cookies_from_browser(target_path: Path) -> bool:
-        supported_browsers = ["chrome", "firefox", "edge", "opera", "brave"]
-        
-        for browser in supported_browsers:
-            opts: Any = {
-                'cookiesfrombrowser': (browser,),
-                'cookiefile': str(target_path),
-                'quiet': True,
-                'no_warnings': True,
-                'skip_download': True,
+            kwargs = {
+                'text': True,
+                'encoding': 'utf-8',
+                'check': True,
+                'timeout': timeout
             }
+            
+            if require_stdout:
+                kwargs['capture_output'] = True
+            else:
+                kwargs['stdout'] = subprocess.DEVNULL
+                kwargs['stderr'] = subprocess.PIPE
 
-            try:
-                logging.debug(f"Mencoba mengambil cookies dari browser: {browser}...")
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    ydl.extract_info("https://www.youtube.com", download=False)
-            except Exception as e:
-                logging.debug(f"Gagal mengambil cookies dari {browser}: {e}")
-                continue
+            result = subprocess.run(cmd, **kwargs)
+            return result.stdout.strip() if require_stdout else ""
 
-            if target_path.exists() and target_path.stat().st_size > 0:
-                logging.info(f"✅ File cookies berhasil dibuat dari {browser}: {target_path}")
-                return True
+        except subprocess.CalledProcessError as e:
+            # Decode stderr dengan aman
+            error_msg = e.stderr if hasattr(e, 'stderr') and e.stderr else str(e)
+            if isinstance(error_msg, bytes): # Fallback jika text=False (meski kita set True)
+                error_msg = error_msg.decode('utf-8', errors='ignore')
+            
+            # Deteksi cerdas untuk Rate Limit (HTTP 429)
+            if "HTTP Error 429" in error_msg or "Too Many Requests" in error_msg:
+                raise RateLimitError(f"YouTube Rate Limit detected (IP Blocked): {error_msg}") from e
+
+            raise MediaDownloadError(f"Process Failed: {error_msg}") from e
+        except subprocess.TimeoutExpired as e:
+            raise MediaDownloadError(f"Process timeout after {e.timeout}s") from e
+
+    def get_safe_title(self, url: str) -> str:
         
-        return False
-
-    @staticmethod
-    def check_and_setup_cookies(cookies_path: Union[str, Path]) -> Optional[Path]:
-        path_obj = Path(cookies_path)
-        if path_obj.exists() and path_obj.stat().st_size > 0:
-            logging.info(f"✅ File cookies ditemukan di: {path_obj}")
-            return path_obj
-
-        if env_cookies := os.getenv("YOUTUBE_COOKIES"):
-            try:
-                logging.info("🍪 Menemukan cookies dari Environment Variable. Menyimpan ke file...")
-                path_obj.parent.mkdir(parents=True, exist_ok=True)
-                path_obj.write_text(env_cookies, encoding='utf-8')
-                return path_obj
-            except Exception as e:
-                logging.error(f"Gagal menyimpan cookies dari Env: {e}")
-
-        if os.getenv("SPACE_ID"):
-            logging.warning("⚠️ Berjalan di lingkungan Cloud. Ekstraksi cookies browser dilewati.")
-            return None
-
-        if YouTubeAdapter.extract_cookies_from_browser(path_obj):
-            return path_obj
-        
-        logging.warning("⚠️ Gagal mengekstrak cookies. YouTube mungkin memblokir akses (Sign-in Required).")
-        return None
-
-    def _get_base_opts(self) -> Dict[str, Any]:
-        opts: Dict[str, Any] = {
-            'no_warnings': False,
-            'noprogress': True,
-            'socket_timeout': 30,
-            'retries': 10,
-            'nocheckcertificate': True,
-            'logger': YtDlpLogger(),
-            'remote_components': ['ejs:npm', 'ejs:github'],
-            'force_ipv4': True,
-        }
-
-        if proxy_url := os.getenv('PROXY_URL'):
-            opts['proxy'] = proxy_url
-            logging.info("🌐 Menggunakan proxy yang dikonfigurasi dari environment.")
-
-        if self._node_available:
-            opts['js_runtimes'] = {'node': {}}
-
-        if self.cookies_path:
-            path_obj = Path(self.cookies_path)
-            if path_obj.exists():
-                opts['cookiefile'] = str(path_obj)
-        return opts
-
-    def get_video_info(self, url: str) -> Dict[str, Any]:
+        """
+        Mengambil judul video yang aman digunakan sebagai nama folder.
+        """
         if url in self._info_cache:
             return self._info_cache[url]
 
-        opts = self._get_base_opts()
-        opts['skip_download'] = True
+        cmd = [
+            self.bin_path,
+            '--get-title',
+            '--no-playlist',
+        ] + self.base_cli_args + [url]
 
         try:
-            with yt_dlp.YoutubeDL(cast(Any, opts)) as ydl:
-                info = ydl.extract_info(url, download=False)
-                if info:
-                    self._info_cache[url] = cast(Dict[str, Any], info)
-                    return self._info_cache[url]
-        except Exception as e:
-            raise MediaDownloadError(f"Gagal mengambil metadata video: {e}")
+            self.logger.debug(f"   -> Getting safe title: {url}")
+            safe_title = self._execute_command(cmd, timeout=60, require_stdout=True)
+            self._info_cache[url] = safe_title
+            return safe_title
+        except MediaDownloadError as e:
+            raise MediaDownloadError(f"Gagal mendapatkan judul video: {e}") from e
+
+    def download_audio(self, url: str, output_dir: str, filename_prefix: str) -> str:
+        out_path = Path(output_dir)
+        out_path.mkdir(parents=True, exist_ok=True)
         
-        raise MediaDownloadError("Gagal mengambil metadata video (Info kosong).")
-
-    def get_stream_urls(self, url: str) -> Tuple[Optional[str], Optional[str]]:
-        info = self.get_video_info(url)
-        if not info:
-            return None, None
-
-        # 1. Cek requested_formats (biasanya tersedia jika info baru diambil)
-        if 'requested_formats' in info:
-            formats = info['requested_formats']
-            video_format = next((f for f in formats if f.get('vcodec') != 'none' and f.get('url')), None)
-            audio_format = next((f for f in formats if f.get('acodec') != 'none' and f.get('url')), None)
-            if video_format:
-                return video_format.get('url'), audio_format.get('url') if audio_format else None
-
-        # 2. Jika tidak ada di cache info, coba ambil ulang khusus stream
-        try:
-            opts = self._get_base_opts()
-            opts['format'] = 'bestvideo+bestaudio/best'
-            with yt_dlp.YoutubeDL(cast(Any, opts)) as ydl:
-                # Kita tidak simpan ke cache utama karena ini mungkin format spesifik
-                stream_info = ydl.extract_info(url, download=False)
-                if stream_info and 'requested_formats' in stream_info:
-                    formats = stream_info['requested_formats']
-                    video_format = next((f for f in formats if f.get('vcodec') != 'none' and f.get('url')), None)
-                    audio_format = next((f for f in formats if f.get('acodec') != 'none' and f.get('url')), None)
-                    if video_format:
-                        return video_format.get('url'), audio_format.get('url') if audio_format else None
-                
-                if stream_info:
-                    direct_url = stream_info.get('url')
-                    if direct_url:
-                        return direct_url, None
-        except Exception as e:
-            logging.warning(f"Gagal mengambil stream URL via fallback: {e}")
-
-        return None, None
-
-    def download_audio(self, url: str, output_dir: str, filename_prefix: str) -> Optional[str]:
-        try:
-            out_path = Path(output_dir)
-            out_path.mkdir(parents=True, exist_ok=True)
-            
-            out_tmpl = out_path / f"{filename_prefix}.%(ext)s"
-            
-            pbar = None
-            def tqdm_hook(d):
-                nonlocal pbar
-                if d['status'] == 'downloading':
-                    if pbar is None:
-                        pbar = tqdm(total=d.get('total_bytes'), unit='B', unit_scale=True, desc=f"🎵 Download Audio ({filename_prefix})")
-                    pbar.update(d.get('downloaded_bytes', 0) - pbar.n)
-                elif d['status'] == 'finished':
-                    if pbar:
-                        pbar.update(pbar.total - pbar.n) # Pastikan bar mencapai 100%
-                        pbar.close()
-
-            opts = self._get_base_opts()
-            opts.update({
-                'format': 'bestaudio/best',
-                'outtmpl': str(out_tmpl),
-                'progress_hooks': [tqdm_hook],
-            })
-
-            with yt_dlp.YoutubeDL(cast(Any, opts)) as ydl:
-                info = ydl.extract_info(url, download=True)
-                if info and 'ext' in info:
-                    final_path = out_path / f"{filename_prefix}.{info['ext']}"
-                    if final_path.exists():
-                        return str(final_path)
-            
-            # Fallback check
-            for file_path in out_path.glob(f"{filename_prefix}.*"):
-                if file_path.suffix not in ['.part', '.ytdl']:
-                    return str(file_path)
-            
-            raise MediaDownloadError(f"Download audio gagal. File output tidak ditemukan: {filename_prefix}")
-
-        except Exception as e:
-            raise MediaDownloadError(f"Gagal mengunduh audio: {e}")
-
-    def _parse_subtitle_json(self, target_url: str) -> Optional[str]:
-        try:
-            req = urllib.request.Request(target_url, headers={'User-Agent': 'Mozilla/5.0'})
-            with urllib.request.urlopen(req, timeout=30) as response:
-                data = json.loads(response.read().decode())
-            
-            full_text = []
-            for event in data.get('events', []):
-                segs = event.get('segs')
-                if segs:
-                    text = "".join([s.get('utf8', '') for s in segs]).strip()
-                    start_sec = event.get('tStartMs', 0) / 1000.0
-                    if text:
-                        full_text.append(f"[{start_sec:.2f}] {text}")
-            return "\n".join(full_text)
-        except Exception as e:
-            logging.error(f"Error parsing subtitle: {e}")
-            return None
-
-    def get_transcript(self, url: str) -> Optional[str]:
-        # 1. Cek Cache
-        info = self.get_video_info(url)
+        output_template = str(out_path / f"{filename_prefix}.%(ext)s")
         
-        # 2. Setup Request jika belum ada info subtitle
-        if not info.get('requested_subtitles'):
-            opts = self._get_base_opts()
-            opts.update({
-                'skip_download': True,
-                'writesubtitles': True,
-                'writeautomaticsub': True,
-                'subtitleslangs': ['id', 'en', '.*'],
-                'subtitlesformat': 'json3/json',
-            })
+        cmd: list[str] = [
+            self.bin_path,
+            '-x',
+            '--audio-format', 'wav',
+            '--output', output_template,
+            url
+        ] + self.base_cli_args
+
+        self.logger.debug(f"🎵 Mengunduh audio via CLI: {filename_prefix}...")
+        self._execute_command(cmd, timeout=300)
+
+        for file_path in out_path.glob(f"{filename_prefix}.*"):
+            if file_path.suffix not in ['.part', '.ytdl']:
+                return str(file_path)
+
+        raise MediaDownloadError(f"File output audio tidak ditemukan setelah download.")
+
+    def download_video_section(self, url: str, start: float, end: float, output_path: str) -> None:
+        """
+        Mengunduh bagian spesifik dari video YouTube menggunakan yt-dlp.
+        """
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        
+        section_arg = f"*{start:.2f}-{end:.2f}"
+        
+        # Post-processor args to force CFR 30fps, AAC audio, and normalize video
+        # Note: We apply this to 'ffmpeg' postprocessor
+        pp_args: str = "ffmpeg:-r 30 -vsync cfr -c:v libx264 -preset ultrafast -c:a aac -b:a 192k"
+
+        cmd = [
+            self.bin_path,
+            '--download-sections', section_arg,
+            '--force-keyframes-at-cuts',
+            '--postprocessor-args', pp_args,
+            '--concurrent-fragments', '4',
+        ] + self.base_cli_args + [
+            '-f', 'bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080][ext=mp4]/best',
+            '-o', output_path,
+            url
+        ]
+
+        self.logger.debug(f"✂️ Downloading CFR Segment: {Path(output_path).name} ({start}-{end}s)")
+        self._execute_command(cmd, timeout=300)
+        
+    def get_transcript(self, url: str, output_dir: str) -> str:
+        """
+        Mengambil transkrip video dari YouTube dan menyimpannya ke file.
+        """
+        out_path = Path(output_dir)
+        out_path.mkdir(parents=True, exist_ok=True)
+
+        safe_title = self.get_safe_title(url)
+        filename_prefix = Path(safe_title).stem
+        
+
+        langueges = [
+            ("English", "en"),
+            ("English_Unversal", "en.*"),
+            ("Indonesia", "id")
+        ]
+
+        for desc, code in langueges:
+            self.logger.debug(f"🔍 Mencoba mengambil transkrip: {desc}...")
+
+            output_template = str(out_path / f"{filename_prefix}.%(lang)s.%(ext)s")
+
+
+            cmd = [
+                self.bin_path,
+                '--skip-download',
+                '--sub-format', 'srt',
+                '--sub-langs', f"{code}",
+                '--write-subs',
+                '--write-auto-subs',
+                '--output', output_template,
+            ] + self.base_cli_args + [url]
+
             try:
-                with yt_dlp.YoutubeDL(cast(Any, opts)) as ydl:
-                    info = ydl.extract_info(url, download=False) or {}
+                # Timeout per langkah lebih pendek agar tidak membuang waktu
+                self._execute_command(cmd, timeout=60)
+
+                # Cek hasil: Konversi regex yt-dlp "en.*" ke glob "en*"
+                found_files = list(out_path.glob(f"{filename_prefix}.{code}.srt"))
+                
+                if found_files:
+                    best_file = found_files[0]
+                    self.logger.info(f"✅ Transkrip ditemukan ({desc}): {best_file.name}")
+                    return str(best_file)
+                
             except Exception:
-                pass
+                continue
 
-        requested_subs = info.get('requested_subtitles', {})
-        if not requested_subs:
-            return None
+        raise MediaDownloadError("Gagal mendapatkan transkrip")
 
-        target_url = None
-        for lang in ['id', 'en']:
-            if lang in requested_subs:
-                target_url = requested_subs[lang].get('url')
-                break
-        
-        if not target_url and requested_subs:
-            target_url = next(iter(requested_subs.values())).get('url')
-
-        return self._parse_subtitle_json(target_url) if target_url else None
+    def extract_cookies(self, browser: str, output_path: str) -> None:
+        """Mengekstrak cookies dari browser lokal."""
+        cmd = [
+            self.bin_path,
+            '--cookies-from-browser', browser,
+            '--cookies', output_path,
+            '--skip-download',
+            '--no-warnings',
+            "https://www.youtube.com"
+        ]
+        # _execute_command akan raise MediaDownloadError jika gagal (return code != 0)--
+        self._execute_command(cmd, timeout=60)

@@ -1,18 +1,8 @@
-import urllib.request
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Optional
 
-@dataclass
-class SubtitleConfig:
-    font_name: str = "Poppins Bold"
-    font_size: int = 60
-    primary_color: str = "&H00FFFFFF" # Putih
-    outline_color: str = "&H00000000" # Hitam Transparan
-    back_color: str = "&H80000000"    # Background Semi-Transparan
-    bold: int = 0
-    italic: int = 0
-    margin_v: int = 60
+from src.domain.models import SubtitleConfig
 
 @dataclass
 class AppPaths:
@@ -58,26 +48,6 @@ class AppPaths:
         self.FACE_LANDMARKER_FILE = self.MEDIAPIPE_DIR / "face_landmarker.task"
         self.FFMPEG_CACHE_FILE = self.FILES_DIR / "ffmpeg_cache.json"
 
-    def create_dirs(self):
-        paths_to_create = [
-            self.TEMP_DIR, self.OUTPUT_DIR, self.MODELS_DIR,
-            self.FILES_DIR, self.FONTS_DIR,
-            self.LOGS_DIR, self.WHISPER_MODELS_DIR, self.MEDIAPIPE_DIR
-        ]
-        for path in paths_to_create:
-            path.mkdir(parents=True, exist_ok=True)
-
-        # Auto-download Font jika belum ada (Lokal & Server)
-        font_path = self.FONTS_DIR / "Poppins-Bold.ttf"
-        if not font_path.exists():
-            print(f"⬇️  Font tidak ditemukan. Mengunduh ke: {font_path}...")
-            try:
-                url = "https://github.com/google/fonts/raw/main/ofl/poppins/Poppins-Bold.ttf"
-                urllib.request.urlretrieve(url, font_path)
-                print("✅ Font berhasil diunduh.")
-            except Exception as e:
-                print(f"⚠️ Gagal mengunduh font: {e}")
-
 @dataclass
 class AppConfig:
     # Pastikan menggunakan default_factory (ini yang memperbaiki error mutable default)
@@ -93,6 +63,9 @@ class AppConfig:
         ]    
     )
     
+    # FFmpeg Preference
+    ffmpeg_encoder_preference: Optional[str] = None
+    
     # Motion Tracking
     motion_window_size: int = 5
     motion_process_every_n_frames: int = 3
@@ -107,17 +80,3 @@ class AppConfig:
     whisper_model_size: str = "small" 
     whisper_device: str = "cpu"
     whisper_compute_type: str = "int8"
-
-    def get_prompt_template(self) -> str:
-        """Memuat prompt template, fallback ke default jika file tidak ada."""
-        if self.paths.PROMPT_FILE.exists():
-            return self.paths.PROMPT_FILE.read_text(encoding='utf-8')
-        
-        # Default Prompt jika file hilang
-        return """
-        Role: Content Strategist. Analyze audio & transcript for viral clips.
-        Requirements:
-        1. Timestamps: Float seconds (aligned with transcript).
-        2. Language: Indonesian.
-        3. Output JSON: { "video_title": "...", "audio_energy_profile": "...", "clips": [ ... ] }
-        """
