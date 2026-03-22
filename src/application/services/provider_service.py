@@ -18,23 +18,32 @@ class ProviderService:
 
         return self.downloader.get_safe_title(url)
 
-    def get_transcript(self, url: str, temp_dir: str) -> str:
+    def get_transcript(self, url: str, temp_dir: str, filename_prefix: str) -> Path:
+        # Cek Cache Manual: Cari file srt yang sudah ada dengan prefix tersebut
+        out_path = Path(temp_dir)
+        for file_path in out_path.glob(f"{filename_prefix}*.srt"):
+            if file_path.exists() and file_path.stat().st_size > 0:
+                self.logger.debug(f"♻️ Transkrip cached: {file_path.name}")
+                return file_path
+
         try:
-            # Gunakan RetryHandler yang sudah dikonfigurasi di Container (Cool Down Policy)
-            return self.retry_handler.execute(
-                self.downloader.get_transcript, 
-                url, 
-                output_dir=temp_dir
+            # Langsung panggil downloader, karena adapter sudah menangani retry internal (via yt-dlp args)
+            path_str = self.downloader.get_transcript(
+                url,
+                output_dir=temp_dir,
+                filename_prefix=filename_prefix
             )
+            return Path(path_str)
         except RateLimitError:
             self.logger.error("❌ Rate Limit persisten. Gagal mengambil transkrip setelah retry.")
-            return ""
+            # Return path ke file dummy yang tidak ada/kosong agar flow tidak crash tapi konten kosong
+            return out_path / f"{filename_prefix}_failed.srt"
         except MediaDownloadError as e:
             # Error umum download (misal tidak ada sub) tidak di-retry oleh handler ini
             self.logger.warning(f"⚠️ Transkrip tidak ditemukan: {e}. Analisis AI mungkin kurang akurat.")
-            return ""
+            return out_path / f"{filename_prefix}_missing.srt"
 
-    def prepare_audio_for_analysis(self, url: str, work_dir: Path, filename_prefix: str) -> Path:
+    def prepare_media_for_analysis(self, url: str, work_dir: Path, filename_prefix: str) -> Path:
         """
         Memastikan file audio WAV yang siap untuk dianalisis tersedia.
         Mengatur alur: Cek Cache -> Unduh (langsung ke WAV) -> Selesai.

@@ -100,17 +100,28 @@ class Workflow:
         """Menjalankan analisis AI lengkap (Transkrip + Audio + Gemini)."""
         ctx.ui.show_info("   -> Mode AI: Menganalisis video untuk klip potensial...")
         
-        transcript = self.provider.get_transcript(url, temp_dir=str(work_dir))
-        audio_wav_path = self.provider.prepare_audio_for_analysis(url, work_dir, "full_audio")
+        # Membuat subfolder 'source' untuk menyimpan file mentah dan cache analisis
+        source_dir = work_dir / "source"
+        source_dir.mkdir(parents=True, exist_ok=True)
+
+        transcript_path = self.provider.get_transcript(url, temp_dir=str(source_dir), filename_prefix="transcript")
+        
+        # Baca konten transkrip dari Path
+        transcript_text = ""
+        if transcript_path.exists() and transcript_path.stat().st_size > 0:
+            # Gunakan errors='ignore' untuk menghindari crash karena encoding karakter aneh
+            transcript_text = transcript_path.read_text(encoding='utf-8', errors='ignore')
+
+        audio_wav_path = self.provider.prepare_media_for_analysis(url, source_dir, "full_audio")
         
         if not audio_wav_path:
             raise MediaDownloadError("Gagal menyiapkan audio untuk analisis.")
 
         prompt = self.prompt_template
-        cache_path = str(work_dir / "summary.json")
+        cache_path = str(source_dir / "summary.json")
         
         summary = self.provider.analyze_video(
-            transcript=transcript,
+            transcript=transcript_text,
             audio_path=str(audio_wav_path),
             prompt=prompt,
             cache_path=cache_path,
@@ -151,7 +162,7 @@ class Workflow:
 
         for clip_path in iterator:
             self.logger.debug(f"   -> Tracking klip: {clip_path.name}")
-            output_tracked = tracked_dir / f"tracked_{clip_path.name}"
+            output_tracked = tracked_dir / f"{clip_path.name}"
             
             try:
                 # Eksekusi Sekuensial: Mencegah OOM dengan memproses satu per satu

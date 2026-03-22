@@ -1,7 +1,5 @@
 
 .venv/
-.vscode/
-.vscode/settings.json
 
 # Python Cache (File sampah otomatis Python)
 __pycache__/

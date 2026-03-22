@@ -19,20 +19,21 @@ class YouTubeAdapter(IMediaDownloader, ICookieExtractor):
 
         self.base_cli_args = [
             '--force-ipv4',
+            '--verbose',
             '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            '--no-warnings',
-            '--no-check-certificate',
             '--replace-in-metadata', 'title', '[<>:"/\\\\|?*]', '',
             '--replace-in-metadata', 'title', '[\\s\\.]+', '_',
             '--replace-in-metadata', 'title', '[^a-zA-Z0-9_]', '',
-            '--retries', '10',
+            '--retries', '10',  
             '--fragment-retries', '10',
             '--retry-sleep', 'exp=1:20'
         ]
         if self.cookies_path and Path(self.cookies_path).exists():
             self.base_cli_args.extend(['--cookies', str(self.cookies_path)])
 
-        if node_path is None:
+        if node_path:
+            self.base_cli_args.extend(['--js-runtimes', f'node:{node_path}'])
+        else:
             self.logger.warning("⚠️ Executable 'node' tidak ditemukan/diberikan. Beberapa video YouTube mungkin gagal diunduh.")
 
     def _execute_command(self, cmd: list, timeout: int = 300, require_stdout: bool = False) -> str:
@@ -140,28 +141,23 @@ class YouTubeAdapter(IMediaDownloader, ICookieExtractor):
         self.logger.debug(f"✂️ Downloading CFR Segment: {Path(output_path).name} ({start}-{end}s)")
         self._execute_command(cmd, timeout=300)
         
-    def get_transcript(self, url: str, output_dir: str) -> str:
+    def get_transcript(self, url: str, output_dir: str, filename_prefix: str) -> str:
         """
         Mengambil transkrip video dari YouTube dan menyimpannya ke file.
         """
         out_path = Path(output_dir)
         out_path.mkdir(parents=True, exist_ok=True)
 
-        safe_title = self.get_safe_title(url)
-        filename_prefix = Path(safe_title).stem
-        
-
-        langueges = [
+        languages = [
             ("English", "en"),
-            ("English_Unversal", "en.*"),
+            ("English_Universal", "en.*"),
             ("Indonesia", "id")
         ]
 
-        for desc, code in langueges:
-            self.logger.debug(f"🔍 Mencoba mengambil transkrip: {desc}...")
+        output_template = str(out_path / f"{filename_prefix}.%(ext)s")
 
-            output_template = str(out_path / f"{filename_prefix}.%(lang)s.%(ext)s")
-
+        for desc, code in languages:
+            self.logger.debug(f"🔍 Mencoba mengambil transkrip: {desc} {filename_prefix}...")
 
             cmd = [
                 self.bin_path,
@@ -174,17 +170,12 @@ class YouTubeAdapter(IMediaDownloader, ICookieExtractor):
             ] + self.base_cli_args + [url]
 
             try:
-                # Timeout per langkah lebih pendek agar tidak membuang waktu
                 self._execute_command(cmd, timeout=60)
 
-                # Cek hasil: Konversi regex yt-dlp "en.*" ke glob "en*"
-                found_files = list(out_path.glob(f"{filename_prefix}.{code}.srt"))
-                
-                if found_files:
-                    best_file = found_files[0]
-                    self.logger.info(f"✅ Transkrip ditemukan ({desc}): {best_file.name}")
-                    return str(best_file)
-                
+                for file_path in out_path.glob(f"{filename_prefix}.*"):
+                    if file_path.suffix not in ['.part', '.ytdl']:
+                        return str(file_path)
+              
             except Exception:
                 continue
 
