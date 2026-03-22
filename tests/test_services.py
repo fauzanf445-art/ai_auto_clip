@@ -31,7 +31,6 @@ class TestProviderService(unittest.TestCase):
             downloader=self.mock_downloader, 
             processor=MagicMock(), 
             analyzer=MagicMock(), 
-            retry_handler=MagicMock(),
             cache_manager=MagicMock(spec=ICacheManager),
             logger=self.mock_logger
         )
@@ -137,7 +136,6 @@ class TestAnalysisService(unittest.TestCase):
             processor=MagicMock(), 
             analyzer=self.mock_analyzer, 
             cache_manager=MagicMock(spec=ICacheManager),
-            retry_handler=MagicMock(),
             logger=self.mock_logger
         )
 

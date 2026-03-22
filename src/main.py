@@ -25,7 +25,7 @@ def run_extract_cookies(config: AppConfig):
     else:
          print("❌ Gagal mengekstrak cookies. Pastikan browser tertutup atau login YouTube.")
 
-def run_cli(config: AppConfig, url: Optional[str] = None, verbose: bool = False):
+def run_cli(config: AppConfig, url: Optional[str] = None, keep_temp: bool = False):
     """Menjalankan aplikasi dalam mode CLI."""
     setup_environment(config)
     
@@ -40,7 +40,7 @@ def run_cli(config: AppConfig, url: Optional[str] = None, verbose: bool = False)
             f.write(f"GEMINI_API_KEY={api_key}")
 
     try:
-        container = Container(config, verbose=verbose)
+        container = Container(config, keep_temp=keep_temp)
         
         ctx = SessionContext(
             ui=ui,
@@ -76,6 +76,7 @@ def run_web(config: AppConfig):
             yield "Error: Gemini API Key wajib diisi.", None
             return
 
+
         ui = GradioUI()
         ui.log("🚀 Memulai inisialisasi sistem...")
         yield ui.log_output, None
@@ -85,7 +86,7 @@ def run_web(config: AppConfig):
             logger = TqdmLogger(config.paths.LOG_FILE)
             progress_reporter = LogProgressReporter(logger)
 
-            container = Container(config, verbose=False)
+            container = Container(config, keep_temp=False)
             
             ctx = SessionContext(
                 ui=ui,

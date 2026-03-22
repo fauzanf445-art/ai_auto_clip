@@ -12,7 +12,7 @@ def main():
     parser.add_argument("url", nargs="?", help="URL Video YouTube yang akan memproses")
     parser.add_argument("--extract-cookies", action="store_true", help="Ekstrak cookies dari browser lokal")
     parser.add_argument("--web", action="store_true", help="Jalankan antarmuka Gradio")
-    parser.add_argument("--verbose", "-v", action="store_true", help="Tampilkan log DEBUG di terminal")
+    parser.add_argument("--keep-temp", action="store_true", help="Jangan hapus folder sementara setelah proses selesai (untuk debugging)")
     args = parser.parse_args()
 
     config = AppConfig()
@@ -28,7 +28,7 @@ def main():
         return
 
     # Default: Run CLI
-    engine.run_cli(config, url=args.url, verbose=args.verbose)
+    engine.run_cli(config, url=args.url, keep_temp=args.keep_temp)
 
 if __name__ == "__main__":
     main()

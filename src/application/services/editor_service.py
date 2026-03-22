@@ -117,7 +117,7 @@ class EditorService:
                     track_res.height
                 )
 
-                final_out = output_dir / f"final_{original_path.name}"
+                final_out = output_dir / f"{original_path.name}"
                 
                 self.render_final_video(str(track_res.tracked_video), str(original_path), str(sub_path), str(final_out), str(self.fonts_dir))
                 return final_out

@@ -104,7 +104,7 @@ class Workflow:
         source_dir = work_dir / "source"
         source_dir.mkdir(parents=True, exist_ok=True)
 
-        transcript_path = self.provider.get_transcript(url, temp_dir=str(source_dir), filename_prefix="transcript")
+        transcript_path = self.provider.get_transcript_for_analysis(url, temp_dir=str(source_dir), filename_prefix="transcript")
         
         # Baca konten transkrip dari Path
         transcript_text = ""
@@ -112,7 +112,7 @@ class Workflow:
             # Gunakan errors='ignore' untuk menghindari crash karena encoding karakter aneh
             transcript_text = transcript_path.read_text(encoding='utf-8', errors='ignore')
 
-        audio_wav_path = self.provider.prepare_media_for_analysis(url, source_dir, "full_audio")
+        audio_wav_path = self.provider.get_audio_for_analysis(url, source_dir, "full_audio")
         
         if not audio_wav_path:
             raise MediaDownloadError("Gagal menyiapkan audio untuk analisis.")

@@ -56,15 +56,12 @@ class YouTubeAdapter(IMediaDownloader, ICookieExtractor):
             return result.stdout.strip() if require_stdout else ""
 
         except subprocess.CalledProcessError as e:
-            # Decode stderr dengan aman
             error_msg = e.stderr if hasattr(e, 'stderr') and e.stderr else str(e)
             if isinstance(error_msg, bytes): # Fallback jika text=False (meski kita set True)
                 error_msg = error_msg.decode('utf-8', errors='ignore')
             
-            # Deteksi cerdas untuk Rate Limit (HTTP 429)
             if "HTTP Error 429" in error_msg or "Too Many Requests" in error_msg:
                 raise RateLimitError(f"YouTube Rate Limit detected (IP Blocked): {error_msg}") from e
-
             raise MediaDownloadError(f"Process Failed: {error_msg}") from e
         except subprocess.TimeoutExpired as e:
             raise MediaDownloadError(f"Process timeout after {e.timeout}s") from e
@@ -175,7 +172,9 @@ class YouTubeAdapter(IMediaDownloader, ICookieExtractor):
                 for file_path in out_path.glob(f"{filename_prefix}.*"):
                     if file_path.suffix not in ['.part', '.ytdl']:
                         return str(file_path)
-              
+
+            except RateLimitError:
+                raise
             except Exception:
                 continue
 

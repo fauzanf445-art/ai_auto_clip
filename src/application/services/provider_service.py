@@ -1,25 +1,23 @@
 from pathlib import Path
 from typing import Optional
 
-from src.domain.interfaces import IMediaDownloader, IVideoProcessor, IContentAnalyzer, ICacheManager, ILogger, IRetryHandler
+from src.domain.interfaces import IMediaDownloader, IVideoProcessor, IContentAnalyzer, ICacheManager, ILogger
 from src.domain.models import VideoSummary, Clip
 from src.domain.exceptions import MediaDownloadError, RateLimitError
 
 class ProviderService:
-    def __init__(self, downloader: IMediaDownloader, processor: IVideoProcessor, analyzer: IContentAnalyzer, cache_manager: ICacheManager, retry_handler: IRetryHandler, logger: ILogger):
+    def __init__(self, downloader: IMediaDownloader, processor: IVideoProcessor, analyzer: IContentAnalyzer, cache_manager: ICacheManager, logger: ILogger):
         self.downloader = downloader
         self.processor = processor
         self.analyzer = analyzer
         self.cache_manager = cache_manager
-        self.retry_handler = retry_handler
         self.logger = logger
 
     def get_safe_folder_name(self, url: str) -> Optional[str]:
 
         return self.downloader.get_safe_title(url)
 
-    def get_transcript(self, url: str, temp_dir: str, filename_prefix: str) -> Path:
-        # Cek Cache Manual: Cari file srt yang sudah ada dengan prefix tersebut
+    def get_transcript_for_analysis(self, url: str, temp_dir: str, filename_prefix: str) -> Path:
         out_path = Path(temp_dir)
         for file_path in out_path.glob(f"{filename_prefix}*.srt"):
             if file_path.exists() and file_path.stat().st_size > 0:
@@ -27,7 +25,6 @@ class ProviderService:
                 return file_path
 
         try:
-            # Langsung panggil downloader, karena adapter sudah menangani retry internal (via yt-dlp args)
             path_str = self.downloader.get_transcript(
                 url,
                 output_dir=temp_dir,
@@ -36,14 +33,12 @@ class ProviderService:
             return Path(path_str)
         except RateLimitError:
             self.logger.error("❌ Rate Limit persisten. Gagal mengambil transkrip setelah retry.")
-            # Return path ke file dummy yang tidak ada/kosong agar flow tidak crash tapi konten kosong
             return out_path / f"{filename_prefix}_failed.srt"
         except MediaDownloadError as e:
-            # Error umum download (misal tidak ada sub) tidak di-retry oleh handler ini
             self.logger.warning(f"⚠️ Transkrip tidak ditemukan: {e}. Analisis AI mungkin kurang akurat.")
             return out_path / f"{filename_prefix}_missing.srt"
 
-    def prepare_media_for_analysis(self, url: str, work_dir: Path, filename_prefix: str) -> Path:
+    def get_audio_for_analysis(self, url: str, temp_dir: Path, filename_prefix: str) -> Path:
         """
         Memastikan file audio WAV yang siap untuk dianalisis tersedia.
         Mengatur alur: Cek Cache -> Unduh (langsung ke WAV) -> Selesai.
@@ -52,20 +47,20 @@ class ProviderService:
             ConnectionError: Jika download gagal.
             IOError: Jika file tidak ditemukan setelah download.
         """
-        wav_path = work_dir / f"{filename_prefix}.wav"
+        out_path = temp_dir / f"{filename_prefix}.wav"
 
-        if wav_path.exists() and wav_path.stat().st_size > 10240:
-            self.logger.debug(f"♻️ Audio WAV cached: {wav_path.name}")
-            return wav_path
+        if out_path.exists() and out_path.stat().st_size > 10240:
+            self.logger.debug(f"♻️ Audio WAV cached: {out_path.name}")
+            return out_path
 
-        downloaded_audio_path_str = self.downloader.download_audio(url, str(work_dir), filename_prefix)
+        downloaded_audio_path_str = self.downloader.download_audio(url, str(temp_dir), filename_prefix)
         downloaded_path = Path(downloaded_audio_path_str)
 
         if downloaded_path.exists() and downloaded_path.suffix.lower() == '.wav':
-            if downloaded_path.resolve() != wav_path.resolve():
-                 self.logger.warning(f"File audio diunduh sebagai {downloaded_path.name}, me-rename ke {wav_path.name}")
-                 downloaded_path.rename(wav_path)
-            return wav_path
+            if downloaded_path.resolve() != out_path.resolve():
+                 self.logger.warning(f"File audio diunduh sebagai {downloaded_path.name}, me-rename ke {out_path.name}")
+                 downloaded_path.rename(out_path)
+            return out_path
         
         raise IOError("Gagal mendapatkan file audio WAV. File tidak ditemukan atau format salah setelah proses unduh.")
 

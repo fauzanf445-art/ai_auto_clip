@@ -39,12 +39,13 @@ class IMediaDownloader(ABC):
     
     @abstractmethod
     def download_audio(self, url: str, output_dir: str, filename_prefix: str) -> str: ...
+
+    @abstractmethod
+    def get_transcript(self, url: str, output_dir: str, filename_prefix: str) -> str: ...
     
     @abstractmethod
     def download_video_section(self, url: str, start: float, end: float, output_path: str) -> None: ...
 
-    @abstractmethod
-    def get_transcript(self, url: str, output_dir: str, filename_prefix: str) -> str: ...
 
 class ICookieExtractor(ABC):
     """Interface khusus untuk mengekstrak cookies browser."""
@@ -141,7 +142,14 @@ class ISystemHelper(ABC):
     @abstractmethod
     def find_executable(self, name: str) -> str: ...
     @abstractmethod
-    def prune_directory(self, directory: Path, max_files: int, max_size_mb: int, file_prefix: str = "", extensions: Tuple[str, ...] = ()) -> None: ...
+    def prune_directory(
+        self, 
+        directory: Path, 
+        max_files: int, 
+        max_size_mb: int, 
+        file_prefix: str = "", 
+        extensions: Tuple[str, ...] = ()
+        ) -> None: ...
 
 @runtime_checkable
 class IWorkspaceManager(Protocol):
@@ -159,18 +167,30 @@ class IProviderService(Protocol):
     """Protocol untuk Provider Service."""
     def get_safe_folder_name(self, url: str) -> Optional[str]: ...
     
-    def get_transcript(self, url: str, temp_dir: str, filename_prefix: str ) -> Path: ...
+    def get_transcript_for_analysis(self, url: str, temp_dir: str, filename_prefix: str ) -> Path: ...
     
-    def prepare_media_for_analysis(self, url: str, work_dir: Path, filename_prefix: str) -> Path: ...
+    def get_audio_for_analysis(self, url: str, temp_dir: Path, filename_prefix: str) -> Path: ...
     
     def analyze_video(self, transcript: str, audio_path: str, prompt: str, cache_path: Optional[str] = None, api_key: str = "") -> VideoSummary: ...
 
 @runtime_checkable
 class IEditorService(Protocol):
     """Protocol untuk Editor Service."""
-    def batch_create_clips(self, clips: List[Clip], source_url: str, output_dir: Path, progress_reporter: Optional[IProgressReporter] = None, cookies_path: Optional[str] = None) -> List[Path]: ...
+    def batch_create_clips(
+        self,
+        clips: List[Clip],
+        source_url: str,
+        output_dir: Path,
+        progress_reporter: Optional[IProgressReporter] = None,
+        cookies_path: Optional[str] = None
+    ) -> List[Path]: ...
     
-    def track_subject(self, input_path: str, output_path: str, progress_reporter: Optional[IProgressReporter] = None) -> TrackResult: ...
+    def track_subject(
+        self,
+        input_path: str, 
+        output_path: str, 
+        progress_reporter: Optional[IProgressReporter] = None
+        ) -> TrackResult: ...
     
     def batch_render(
         self,
@@ -178,6 +198,11 @@ class IEditorService(Protocol):
         work_dir: Path,
         output_dir: Path,
         progress_reporter: Optional[IProgressReporter] = None
-    ) -> List[Path]: ...
+        ) -> List[Path]: ...
     
-    def prune_output_directory(self, output_dir: Path, max_files: int = 10, max_size_mb: int = 500): ...
+    def prune_output_directory(
+        self, 
+        output_dir: Path, 
+        max_files: int = 10, 
+        max_size_mb: int = 500
+        ): ...

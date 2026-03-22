@@ -9,6 +9,7 @@ from src.infrastructure.adapters.gemini_adapter import GeminiAdapter
 from src.infrastructure.adapters.whisper_adapter import WhisperAdapter
 from src.infrastructure.adapters.mediapipe_adapter import MediaPipeAdapter
 from src.infrastructure.adapters.subtitle_writer import AssSubtitleWriter
+
 from src.infrastructure.common.filesystem import SystemHelper, WorkspaceManager, WorkspaceManagerFactory
 from src.infrastructure.common.persistence import JsonFileCache
 from src.infrastructure.common.network import UrllibDownloader, AssetManager
@@ -37,25 +38,19 @@ class Container:
                     cls._instance._initialized = False
         return cls._instance
 
-    def __init__(self, config: AppConfig, verbose: bool = False):
-        # Jika sudah diinisialisasi, cukup segarkan dependensi context dan return
+    def __init__(self, config: AppConfig, keep_temp: bool = False):
         if self._initialized:
             return
 
         self.config = config
-        self.verbose = verbose
+        self.keep_temp = keep_temp
+        self.logger = TqdmLogger(self.config.paths.LOG_FILE, verbose=False)
 
-        # 0. Initialize Logger (Singleton Scope within Container)
-        # Pass the verbose flag to the logger
-        self.logger = TqdmLogger(self.config.paths.LOG_FILE, verbose=self.verbose)
-
-        # Initialize components in order of dependency
         self._init_infrastructure()
         self._init_adapters()
         self._init_services()
         self._init_orchestrator()
         
-        # Tandai bahwa sistem berat sudah dimuat
         self._initialized = True
 
     def _init_infrastructure(self):
@@ -64,17 +59,7 @@ class Container:
         self.cache_manager = JsonFileCache(self.logger)
         self.file_downloader = UrllibDownloader(self.logger)
         self.text_processor = RegexTextProcessor()
-        
-        # 1. General Retry Handler (Default: Exponential Backoff)
-        self.retry_handler = RetryHandler(self.logger)
-        
-        # 2. Transcript Retry Handler (Policy: Cool Down 45s, Constant Delay)
-        # Hanya retry jika terkena RateLimitError
-        self.transcript_retry_handler = RetryHandler(
-            self.logger, max_attempts=2, initial_delay=45.0, backoff_factor=1.0, 
-            retry_on=(RateLimitError,)
-        )
-        
+        self.retry_handler = RetryHandler(self.logger)        
         self.asset_manager = AssetManager(self.file_downloader, self.logger)
         
         self.asset_manager.ensure_asset(
@@ -88,8 +73,7 @@ class Container:
             "Model MediaPipe"
         )
         
-        # Workspace Factory
-        self.workspace_factory = WorkspaceManagerFactory(self.config.paths.TEMP_DIR, self.logger, keep_temp_dirs=self.verbose)
+        self.workspace_factory = WorkspaceManagerFactory(self.config.paths.TEMP_DIR, self.logger, keep_temp_dirs=self.keep_temp)
 
     def _init_adapters(self):
         """Inisialisasi adapter eksternal dan pencarian executable."""
@@ -104,7 +88,6 @@ class Container:
         except ExecutableNotFoundError:
             pass
 
-        # 2. Adapters Instantiation
         self.yt_adapter = YouTubeAdapter(
             yt_dlp_path=ytdlp_path,
             node_path=node_path,
@@ -120,7 +103,7 @@ class Container:
         )
         
         self.gemini_adapter = GeminiAdapter(
-            api_key="", # Singleton tidak menyimpan API Key user, akan dipassing saat runtime
+            api_key="", 
             model_names=self.config.gemini_models,
             text_processor=self.text_processor,
             retry_handler=self.retry_handler,
@@ -142,7 +125,10 @@ class Container:
             logger=self.logger
         )
 
-        self.subtitle_writer = AssSubtitleWriter(config=self.config.subtitle, logger=self.logger)
+        self.subtitle_writer = AssSubtitleWriter(
+            config=self.config.subtitle, 
+            logger=self.logger
+        )
 
     def _init_services(self):
         """Inisialisasi Application Services."""
@@ -156,14 +142,11 @@ class Container:
             processor=self.ffmpeg_adapter,
             analyzer=self.gemini_adapter,
             cache_manager=self.cache_manager,
-            retry_handler=self.transcript_retry_handler,
             logger=self.logger
         )
 
-        # Runtime check untuk memastikan ProviderService memenuhi Protocol IProviderService
         if not isinstance(self.provider_service, IProviderService):
             self.logger.warning("⚠️ ProviderService tidak memenuhi kontrak IProviderService secara runtime.")
-            # Opsional: raise TypeError("ProviderService implementation violation")
         
         self.editor_service = EditorService(
             downloader=self.yt_adapter,
@@ -177,14 +160,11 @@ class Container:
             logger=self.logger
         )
 
-        # Runtime check untuk memastikan EditorService memenuhi Protocol IEditorService
         if not isinstance(self.editor_service, IEditorService):
             self.logger.warning("⚠️ EditorService tidak memenuhi contract IEditorService secara runtime.")
-            # Opsional: raise TypeError("EditorService implementation violation")
 
     def _init_orchestrator(self):
         """Inisialisasi Workflow Orchestrator."""
-        # Runtime check untuk WorkspaceFactory
         if not isinstance(self.workspace_factory, IWorkspaceFactory):
              self.logger.warning("⚠️ WorkspaceFactory tidak memenuhi kontrak IWorkspaceFactory secara runtime.")
 
