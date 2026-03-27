@@ -70,78 +70,74 @@ def run_cli(url: Optional[str] = None, keep_temp: bool = False):
 
 def run_web():
     """Menjalankan aplikasi dalam mode Web dengan dukungan penuh Google Colab."""
-    print("🌐 Memulai HSU AI Clipper dalam mode Web (Gradio)... [cite: 4]")
-    config = get_config() [cite: 4]
-    setup_environment(config) [cite: 4]
+    print("🌐 Memulai HSU AI Clipper dalam mode Web (Gradio)...")
+    config = get_config()
+    setup_environment(config)
 
     # --- Logika Deteksi Environment ---
-    is_huggingface = os.getenv("SPACE_ID") is not None [cite: 4]
+    is_huggingface = os.getenv("SPACE_ID") is not None
     
-    # Deteksi apakah berjalan di Google Colab
-    try:
-        import google.colab
-        is_colab = True
-    except ImportError:
-        is_colab = False
+    # Deteksi apakah berjalan di Google Colab via Environment Variable (Menghindari Pylance Import Error)
+    is_colab = "COLAB_RELEASE_TAG" in os.environ
 
-    def process_via_web(url, api_key, keep_temp): [cite: 4]
-        if not url: [cite: 4]
-            yield "Error: URL YouTube wajib diisi.", None [cite: 4]
-            return [cite: 4]
-        if not api_key: [cite: 4]
-            yield "Error: Gemini API Key wajib diisi.", None [cite: 4]
-            return [cite: 4]
+    def process_via_web(url, api_key, keep_temp):
+        if not url: 
+            yield "Error: URL YouTube wajib diisi.", None
+            return
+        if not api_key:
+            yield "Error: Gemini API Key wajib diisi.", None
+            return
 
-        ui = GradioUI() [cite: 4]
-        ui.log("🚀 Memulai inisialisasi sistem...") [cite: 4]
-        yield ui.log_output, None [cite: 4]
+        ui = GradioUI()
+        ui.log("🚀 Memulai inisialisasi sistem...")
+        yield ui.log_output, None
 
         try:
-            # Logger dan Progress Reporter [cite: 4]
-            logger = TqdmLogger(config.paths.log_file) [cite: 4]
-            progress_reporter = LogProgressReporter(logger) [cite: 4]
+            # Logger dan Progress Reporter
+            logger = TqdmLogger(config.paths.log_file)
+            progress_reporter = LogProgressReporter(logger)
 
-            container = Container(config, logger, keep_temp=keep_temp) [cite: 4]
+            container = Container(config, logger, keep_temp=keep_temp)
             
-            # Memastikan aset (model/font) tersedia [cite: 4]
-            container.manager_service.ensure_system_integrity() [cite: 4]
+            # Memastikan aset (model/font) tersedia
+            container.manager_service.ensure_system_integrity()
             
-            ctx = SessionContext( [cite: 4]
+            ctx = SessionContext(
                 ui=ui,
                 api_key=api_key,
                 progress_reporter=progress_reporter
-            ) [cite: 4]
+            )
             
-            url = url.split('#')[0].strip() [cite: 4]
-            ui.log(f"Memproses URL: {url}") [cite: 4]
-            yield ui.log_output, None [cite: 4]
+            url = url.split('#')[0].strip()
+            ui.log(f"Memproses URL: {url}")
+            yield ui.log_output, None
             
-            video_files = container.workflow.run(ctx, url) [cite: 4]
+            video_files = container.workflow.run(ctx, url)
             
-            ui.log("✅ Proses Selesai!") [cite: 4]
-            yield ui.log_output, [str(v) for v in video_files] [cite: 4]
+            ui.log("✅ Proses Selesai!")
+            yield ui.log_output, [str(v) for v in video_files]
             
-        except Exception as e: [cite: 4]
-            ui.show_error(str(e)) [cite: 4]
-            yield ui.log_output, None [cite: 4]
+        except Exception as e:
+            ui.show_error(str(e))
+            yield ui.log_output, None
 
-    # Ambil API Key dari environment jika ada [cite: 4]
-    default_api_key = os.getenv("GEMINI_API_KEY", "") [cite: 4]
+    # Ambil API Key dari environment jika ada
+    default_api_key = os.getenv("GEMINI_API_KEY", "")
     
-    # Inisialisasi Interface [cite: 4]
-    demo = create_gradio_interface(process_fn=process_via_web, default_api_key=default_api_key) [cite: 4]
+    # Inisialisasi Interface
+    demo = create_gradio_interface(process_fn=process_via_web, default_api_key=default_api_key)
     
     # --- Konfigurasi Network untuk Colab vs Lokal/Docker ---
-    # 1. server_name: "0.0.0.0" agar bisa diakses dari luar container [cite: 2, 4]
+    # 1. server_name: "0.0.0.0" agar bisa diakses dari luar container
     # 2. share: True WAJIB untuk Google Colab agar muncul public link .gradio.live
-    server_name = "0.0.0.0" if (is_huggingface or is_colab) else "127.0.0.1" [cite: 4]
+    server_name = "0.0.0.0" if (is_huggingface or is_colab) else "127.0.0.1"
     should_share = True if is_colab else False
 
     print(f"🔧 Config: Colab={is_colab}, Share={should_share}, Host={server_name}")
     
     demo.queue().launch(
         server_name=server_name, 
-        server_port=7860, [cite: 2, 4]
+        server_port=7860,
         share=should_share,
         debug=is_colab # Membantu melihat error detail di console Colab
     )
