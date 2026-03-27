@@ -1,8 +1,7 @@
-import threading
 from src.config import AppConfig
+from src.application.workflow import Workflow
 
 # Adapters
-from src.infrastructure.ui.logging_config import TqdmLogger
 from src.infrastructure.adapters.youtube_adapter import YouTubeAdapter
 from src.infrastructure.adapters.ffmpeg_adapter import FFmpegAdapter
 from src.infrastructure.adapters.gemini_adapter import GeminiAdapter
@@ -10,48 +9,37 @@ from src.infrastructure.adapters.whisper_adapter import WhisperAdapter
 from src.infrastructure.adapters.mediapipe_adapter import MediaPipeAdapter
 from src.infrastructure.adapters.subtitle_writer import AssSubtitleWriter
 
-from src.infrastructure.common.filesystem import SystemHelper, WorkspaceManager, WorkspaceManagerFactory
+# Infrastruktur
+from src.infrastructure.common.filesystem import SystemHelper, WorkspaceManagerFactory
 from src.infrastructure.common.persistence import JsonFileCache
-from src.infrastructure.common.network import UrllibDownloader, AssetManager
+from src.infrastructure.common.network import UrllibDownloader
 from src.infrastructure.common.text import RegexTextProcessor
 from src.infrastructure.common.resilience import RetryHandler
 
-from src.domain.exceptions import ExecutableNotFoundError, RateLimitError
-from src.domain.interfaces import IProviderService, IEditorService, IWorkspaceFactory
+from src.domain.exceptions import ExecutableNotFoundError
+from src.domain.interfaces import IProviderService, IEditorService, IWorkspaceFactory, ILogger
 
 # Services
 from src.application.services.provider_service import ProviderService
 from src.application.services.editor_service import EditorService
 from src.application.services.auth_service import AuthService
-from src.application.workflow import Workflow
+from src.application.services.manager_service import ManagerService
 
 class Container:
-    _instance = None
-    _lock = threading.Lock()
-
-    def __new__(cls, *args, **kwargs):
-        """Implementasi Thread-Safe Singleton menggunakan Double-Checked Locking."""
-        if not cls._instance:
-            with cls._lock:
-                if not cls._instance:
-                    cls._instance = super(Container, cls).__new__(cls)
-                    cls._instance._initialized = False
-        return cls._instance
-
-    def __init__(self, config: AppConfig, keep_temp: bool = False):
-        if self._initialized:
-            return
-
+    """
+    Composition Root yang menangani Dependency Injection.
+    Sekarang mencakup ManagerService yang menangani integritas sistem secara mandiri.
+    """
+    def __init__(self, config: AppConfig, logger: ILogger, keep_temp: bool = False):
         self.config = config
         self.keep_temp = keep_temp
-        self.logger = TqdmLogger(self.config.paths.LOG_FILE, verbose=False)
+        self.logger = logger
 
         self._init_infrastructure()
+        self._setup_auth() 
         self._init_adapters()
         self._init_services()
         self._init_orchestrator()
-        
-        self._initialized = True
 
     def _init_infrastructure(self):
         """Inisialisasi komponen dasar sistem, cache, dan utilitas."""
@@ -60,38 +48,31 @@ class Container:
         self.file_downloader = UrllibDownloader(self.logger)
         self.text_processor = RegexTextProcessor()
         self.retry_handler = RetryHandler(self.logger)        
-        self.asset_manager = AssetManager(self.file_downloader, self.logger)
         
-        self.asset_manager.ensure_asset(
-            "https://github.com/google/fonts/raw/main/ofl/poppins/Poppins-Bold.ttf",
-            self.config.paths.FONTS_DIR / "Poppins-Bold.ttf",
-            "Font Utama"
+        # Tetap menggunakan Factory untuk manajemen lifecycle workspace yang bersih
+        self.workspace_factory = WorkspaceManagerFactory(
+            self.config.paths.temp_dir, 
+            self.logger, 
+            keep_temp_dirs=self.keep_temp
         )
-        self.asset_manager.ensure_asset(
-            "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
-            self.config.paths.FACE_LANDMARKER_FILE,
-            "Model MediaPipe"
-        )
-        
-        self.workspace_factory = WorkspaceManagerFactory(self.config.paths.TEMP_DIR, self.logger, keep_temp_dirs=self.keep_temp)
+
+    def _setup_auth(self):
+        """Inisialisasi Auth Service dan setup kredensial awal."""
+        self.auth_service = AuthService(logger=self.logger)
+        self.auth_service.check_and_setup_cookies(self.config.paths.cookie_file)
 
     def _init_adapters(self):
         """Inisialisasi adapter eksternal dan pencarian executable."""
-        # 1. System Binaries Lookup
         ffmpeg_path = self.system.find_executable("ffmpeg")
         ytdlp_path = self.system.find_executable("yt-dlp")
         ffprobe_path = self.system.find_executable("ffprobe")
         
-        node_path = None
-        try:
-            node_path = self.system.find_executable("node")
-        except ExecutableNotFoundError:
-            pass
+        node_path = self.system.find_executable("node")
 
         self.yt_adapter = YouTubeAdapter(
             yt_dlp_path=ytdlp_path,
             node_path=node_path,
-            cookies_path=self.config.paths.COOKIE_FILE,
+            cookies_path=self.config.paths.cookie_file,
             logger=self.logger
         )
         
@@ -105,20 +86,19 @@ class Container:
         self.gemini_adapter = GeminiAdapter(
             api_key="", 
             model_names=self.config.gemini_models,
-            text_processor=self.text_processor,
-            retry_handler=self.retry_handler,
             logger=self.logger
         )
         
         whisper_hw = WhisperAdapter.detect_hardware(self.logger)
         self.whisper_adapter = WhisperAdapter(
+            config=self.config.whisper,
             **whisper_hw, 
-            download_root=str(self.config.paths.WHISPER_MODELS_DIR),
+            download_root=str(self.config.paths.whisper_models_dir),
             logger=self.logger
         )
         
         self.mp_adapter = MediaPipeAdapter(
-            model_path=str(self.config.paths.FACE_LANDMARKER_FILE), 
+            model_path=str(self.config.paths.face_landmarker_file), 
             retry_handler=self.retry_handler,
             window_size=self.config.motion_window_size,
             process_every_n_frames=self.config.motion_process_every_n_frames,
@@ -132,8 +112,10 @@ class Container:
 
     def _init_services(self):
         """Inisialisasi Application Services."""
-        self.auth_service = AuthService(
-            cookie_extractor=self.yt_adapter,
+        # ManagerService sekarang mengambil peran Bootstrap
+        self.manager_service = ManagerService(
+            config=self.config,
+            utils_download=self.file_downloader,
             logger=self.logger
         )
 
@@ -141,37 +123,38 @@ class Container:
             downloader=self.yt_adapter,
             processor=self.ffmpeg_adapter,
             analyzer=self.gemini_adapter,
+            transcriber=self.whisper_adapter,
             cache_manager=self.cache_manager,
-            logger=self.logger
+            prompt_path=self.config.paths.prompt_file,
+            logger=self.logger,
+            ai_cache_dir=self.config.paths.ai_cache_dir,
+            raw_ai_filename=self.config.paths.raw_ai_filename,
+            summary_filename=self.config.paths.summary_filename,
+            state_filename=self.config.paths.state_filename
         )
-
-        if not isinstance(self.provider_service, IProviderService):
-            self.logger.warning("⚠️ ProviderService tidak memenuhi kontrak IProviderService secara runtime.")
         
         self.editor_service = EditorService(
+            config=self.config,
             downloader=self.yt_adapter,
             processor=self.ffmpeg_adapter,
             tracker=self.mp_adapter,
-            transcriber=self.whisper_adapter,
             writer=self.subtitle_writer,
             system_helper=self.system,
-            fonts_dir=self.config.paths.FONTS_DIR,
-            karaoke_chunk_size=self.config.karaoke_chunk_size,
+            fonts_dir=self.config.paths.fonts_dir,
             logger=self.logger
         )
 
-        if not isinstance(self.editor_service, IEditorService):
-            self.logger.warning("⚠️ EditorService tidak memenuhi contract IEditorService secara runtime.")
-
     def _init_orchestrator(self):
         """Inisialisasi Workflow Orchestrator."""
-        if not isinstance(self.workspace_factory, IWorkspaceFactory):
-             self.logger.warning("⚠️ WorkspaceFactory tidak memenuhi kontrak IWorkspaceFactory secara runtime.")
-
         self.orchestrator = Workflow(
-            self.config, 
+            config=self.config, 
             provider=self.provider_service, 
             editor=self.editor_service,
             manager_factory=self.workspace_factory,
             logger=self.logger
         )
+
+    @property
+    def workflow(self) -> Workflow:
+        """Mengembalikan instance Workflow utama."""
+        return self.orchestrator

@@ -1,12 +1,13 @@
 import subprocess
 import os
+
 from pathlib import Path
 from typing import List, Optional, Callable, Tuple
 
-from src.domain.interfaces import IVideoProcessor, ILogger
+from src.domain.interfaces import IFfmpegAdapter, ILogger
 from src.domain.exceptions import VideoProcessingError
 
-class FFmpegAdapter(IVideoProcessor):
+class FFmpegAdapter(IFfmpegAdapter):
     """
     Implementasi IVideoProcessor menggunakan FFmpeg CLI.
     Menangani pemotongan, konversi, dan rendering video dengan deteksi hardware acceleration.
@@ -42,7 +43,7 @@ class FFmpegAdapter(IVideoProcessor):
         self._codec_args: List[str] = []
         self._setup_encoder_definitions()
 
-    @property
+
     def is_gpu_enabled(self) -> bool:
         """Mengembalikan True jika encoder yang aktif bukan CPU default."""
         if not self._codec_args:

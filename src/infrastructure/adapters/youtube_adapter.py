@@ -2,10 +2,10 @@ import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any, Union
 
-from src.domain.interfaces import IMediaDownloader, ICookieExtractor, ILogger
+from src.domain.interfaces import IYoutubeAdapter, ILogger
 from src.domain.exceptions import MediaDownloadError, RateLimitError
 
-class YouTubeAdapter(IMediaDownloader, ICookieExtractor):
+class YouTubeAdapter(IYoutubeAdapter):
     """
     Implementasi IMediaDownloader menggunakan yt-dlp.
     Menangani interaksi dengan YouTube: Metadata, Stream URL, Audio Download, dan Cookies.
@@ -138,57 +138,3 @@ class YouTubeAdapter(IMediaDownloader, ICookieExtractor):
         self.logger.debug(f"✂️ Downloading CFR Segment: {Path(output_path).name} ({start}-{end}s)")
         self._execute_command(cmd, timeout=300)
         
-    def get_transcript(self, url: str, output_dir: str, filename_prefix: str) -> str:
-        """
-        Mengambil transkrip video dari YouTube dan menyimpannya ke file.
-        """
-        out_path = Path(output_dir)
-        out_path.mkdir(parents=True, exist_ok=True)
-
-        languages = [
-            ("English", "en"),
-            ("English_Universal", "en.*"),
-            ("Indonesia", "id")
-        ]
-
-        output_template = str(out_path / f"{filename_prefix}.%(ext)s")
-
-        for desc, code in languages:
-            self.logger.debug(f"🔍 Mencoba mengambil transkrip: {desc} {filename_prefix}...")
-
-            cmd = [
-                self.bin_path,
-                '--skip-download',
-                '--sub-format', 'srt',
-                '--sub-langs', f"{code}",
-                '--write-subs',
-                '--write-auto-subs',
-                '--output', output_template,
-            ] + self.base_cli_args + [url]
-
-            try:
-                self._execute_command(cmd, timeout=60)
-
-                for file_path in out_path.glob(f"{filename_prefix}.*"):
-                    if file_path.suffix not in ['.part', '.ytdl']:
-                        return str(file_path)
-
-            except RateLimitError:
-                raise
-            except Exception:
-                continue
-
-        raise MediaDownloadError("Gagal mendapatkan transkrip")
-
-    def extract_cookies(self, browser: str, output_path: str) -> None:
-        """Mengekstrak cookies dari browser lokal."""
-        cmd = [
-            self.bin_path,
-            '--cookies-from-browser', browser,
-            '--cookies', output_path,
-            '--skip-download',
-            '--no-warnings',
-            "https://www.youtube.com"
-        ]
-        # _execute_command akan raise MediaDownloadError jika gagal (return code != 0)--
-        self._execute_command(cmd, timeout=60)

@@ -5,7 +5,7 @@ colorFrom: blue
 colorTo: green
 sdk: docker
 sdk_version: "1.31.0"
-app_file: app.py
+app_file: run.py
 pinned: false
 ---
 
@@ -129,7 +129,7 @@ Aplikasi ini mendukung dua mode operasional:
 ### 1. Mode CLI (Terminal)
 Gunakan mode ini untuk penggunaan cepat di komputer lokal.
 ```bash
-python app.py
+python run.py
 ```
 
 ### 2. Mode Web (Gradio)

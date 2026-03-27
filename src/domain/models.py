@@ -19,15 +19,18 @@ class ClipValidator:
                 raise ValueError(f"End time ({clip.end_time}) harus lebih besar dari start time ({clip.start_time})")
 
 @dataclass
-class SubtitleConfig:
-    font_name: str = "Poppins Bold"
-    font_size: int = 60
-    primary_color: str = "&H00FFFFFF" # Putih
-    outline_color: str = "&H00000000" # Hitam Transparan
-    back_color: str = "&H80000000"    # Background Semi-Transparan
-    bold: int = 0
-    italic: int = 0
-    margin_v: int = 60
+class TranscriptionWord:
+    word: str
+    start: float
+    end: float
+    probability: float
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'TranscriptionWord':
+        return cls(**data)
 
 @dataclass
 class Clip:
@@ -40,16 +43,16 @@ class Clip:
     audio_justification: str
     description: str
     caption: str
-    duration: float = field(init=False)
-    # Path file fisik (opsional, diisi oleh Application/Infrastructure layer saat proses berjalan)
-    raw_path: Optional[str] = None
-    tracked_path: Optional[str] = None
-    final_path: Optional[str] = None
+    words: List[TranscriptionWord] = field(default_factory=list)
     
     def __post_init__(self):
         """Validasi Invarian: Memastikan state objek selalu valid setelah inisialisasi."""
         ClipValidator.validate(self)
-        self.duration = round(self.end_time - self.start_time, 2)
+
+    @property
+    def duration(self) -> float:
+        """Menghitung durasi secara dinamis (Computed Property)."""
+        return round(self.end_time - self.start_time, 2)
 
     @staticmethod
     def sanitize_string(name: str) -> str:
@@ -79,10 +82,6 @@ class Clip:
             audio_justification=data.get('audio_justification', ''),
             description=data.get('description', ''),
             caption=data.get('caption', ''),
-            # Path fisik bisa jadi None saat di-load
-            raw_path=data.get('raw_path'),
-            tracked_path=data.get('tracked_path'),
-            final_path=data.get('final_path')
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -107,16 +106,8 @@ class Clip:
 
 @dataclass
 class VideoSummary:
-    video_title: str
-    audio_energy_profile: str
+    context_keywords: str
     clips: List[Clip] = field(default_factory=list)
-
-@dataclass
-class TranscriptionWord:
-    word: str
-    start: float
-    end: float
-    probability: float
 
 @dataclass
 class TranscriptionSegment:
@@ -125,8 +116,66 @@ class TranscriptionSegment:
     text: str
     words: List[TranscriptionWord] = field(default_factory=list)
 
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "start": self.start,
+            "end": self.end,
+            "text": self.text,
+            "words": [w.to_dict() for w in self.words]
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'TranscriptionSegment':
+        words_data = data.get("words", [])
+        return cls(
+            start=data.get("start", 0.0),
+            end=data.get("end", 0.0),
+            text=data.get("text", ""),
+            words=[TranscriptionWord.from_dict(w) for w in words_data]
+        )
+
 @dataclass
 class TrackResult:
     tracked_video: str
     width: int
     height: int
+
+@dataclass
+class ClipState:
+    """Menyimpan status pengerjaan dan lokasi file fisik dari sebuah Clip."""
+    id: str
+    raw_path: Optional[str] = None
+    tracked_path: Optional[str] = None
+    final_path: Optional[str] = None
+    status: str = "PENDING"
+
+@dataclass
+class ProjectState:
+    """Manajemen state global untuk tracking progress pemrosesan video."""
+    video_source_url: str
+    clip_states: Dict[str, ClipState] = field(default_factory=dict)
+
+    def get_clip_state(self, clip_id: str) -> ClipState:
+        if clip_id not in self.clip_states:
+            self.clip_states[clip_id] = ClipState(id=clip_id)
+        return self.clip_states[clip_id]
+        
+    def update_state(self, clip_id: str, **kwargs):
+        state = self.get_clip_state(clip_id)
+        for key, value in kwargs.items():
+            if hasattr(state, key):
+                setattr(state, key, value)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "video_source_url": self.video_source_url,
+            "clip_states": {cid: asdict(s) for cid, s in self.clip_states.items()}
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'ProjectState':
+        instance = cls(video_source_url=data.get("video_source_url", ""))
+        states = data.get("clip_states", {})
+        for cid, s_data in states.items():
+            instance.clip_states[cid] = ClipState(**s_data)
+        return instance

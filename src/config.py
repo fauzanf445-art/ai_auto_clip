@@ -1,82 +1,124 @@
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List, Optional, Dict
 
-from src.domain.models import SubtitleConfig
 
-@dataclass
-class AppPaths:
-    # Gunakan default_factory agar aman dan dinamis
-    BASE_DIR: Path = field(default_factory=lambda: Path(__file__).parent.parent.resolve())
-    
-    # Folder Struktur (init=False artinya field ini diisi otomatis oleh __post_init__)
-    TEMP_DIR: Path = field(init=False)
-    OUTPUT_DIR: Path = field(init=False)
-    MODELS_DIR: Path = field(init=False)
-    FILES_DIR: Path = field(init=False)
-    FONTS_DIR: Path = field(init=False)
-    LOGS_DIR: Path = field(init=False)
-    LOG_FILE: Path = field(init=False)
-    
-    # Sub-folder Models
-    WHISPER_MODELS_DIR: Path = field(init=False)
-    MEDIAPIPE_DIR: Path = field(init=False)
-    
-    # Files
-    ENV_FILE: Path = field(init=False)
-    COOKIE_FILE: Path = field(init=False)
-    PROMPT_FILE: Path = field(init=False)
-    FACE_LANDMARKER_FILE: Path = field(init=False)
-    FFMPEG_CACHE_FILE: Path = field(init=False)
-
-    def __post_init__(self):
-        self.TEMP_DIR = self.BASE_DIR / "Temp"
-        self.OUTPUT_DIR = self.BASE_DIR / "Output"
-        self.MODELS_DIR = self.BASE_DIR / "models"
-        self.FILES_DIR = self.BASE_DIR / "files"
-        self.FONTS_DIR = self.BASE_DIR / "fonts"
-        
-        self.LOGS_DIR = self.BASE_DIR / "logs"
-        self.LOG_FILE = self.LOGS_DIR / "app.log"
-        
-        self.WHISPER_MODELS_DIR = self.MODELS_DIR / "whispermodels"
-        self.MEDIAPIPE_DIR = self.MODELS_DIR / "mpmodels"
-        
-        self.ENV_FILE = self.FILES_DIR / ".env"
-        self.COOKIE_FILE = self.FILES_DIR / "cookies.txt"
-        self.PROMPT_FILE = self.BASE_DIR / "resources" / "prompts" / "gemini_prompt.txt"
-        self.FACE_LANDMARKER_FILE = self.MEDIAPIPE_DIR / "face_landmarker.task"
-        self.FFMPEG_CACHE_FILE = self.FILES_DIR / "ffmpeg_cache.json"
+from src.domain.interfaces import IAppPaths
 
 @dataclass
-class AppConfig:
-    # Pastikan menggunakan default_factory (ini yang memperbaiki error mutable default)
+class AppPaths(IAppPaths):
+    """
+    Implementasi IAppPaths yang fleksibel menggunakan dictionary internal.
+    Anda bisa mengubah nilai path di sini tanpa merusak kontrak interface.
+    """
+    base_dir: Path = field(default_factory=lambda: Path(__file__).parent.parent.resolve())
+
+    @property
+    def temp_dir(self) -> Path: return self.base_dir / "Temp"
+
+    @property
+    def output_dir(self) -> Path: return self.base_dir / "Output"
+
+    @property
+    def models_dir(self) -> Path: return self.base_dir / "resources" / "models"
+
+    @property
+    def fonts_dir(self) -> Path: return self.base_dir / "resources" / "fonts"
+
+    @property
+    def logs_dir(self) -> Path: return self.base_dir / "logs"
+
+    @property
+    def ai_cache_dir(self) -> Path: return self.temp_dir / "ai_cache"
+
+    @property
+    def whisper_models_dir(self) -> Path: return self.models_dir / "whisper_models"
+
+    @property
+    def mediapipe_dir(self) -> Path: return self.models_dir / "mediapipe_models"
+
+    @property
+    def log_file(self) -> Path: return self.logs_dir / "app.log"
+
+    @property
+    def cookie_file(self) -> Path: return self.temp_dir / "cookies.txt"
+
+    @property
+    def prompt_file(self) -> Path: return self.base_dir / "resources" / "prompts" / "gemini_prompt.txt"
+
+    @property
+    def face_landmarker_file(self) -> Path: return self.mediapipe_dir / "face_landmarker.task"
+
+    @property
+    def env_file(self) -> Path: return self.base_dir / ".env"
+
+    @property
+    def raw_ai_filename(self) -> str: return "raw_ai_response.json"
+
+    @property
+    def summary_filename(self) -> str: return "summary.json"
+
+    @property
+    def state_filename(self) -> str: return "project_state.json"
+
+    @property
+    def all_directories(self) -> List[Path]:
+        """
+        Menyaring semua path yang merupakan direktori.
+        Digunakan oleh ManagerService untuk pembuatan folder otomatis.
+        """
+        return [
+            self.temp_dir, self.output_dir, self.models_dir, 
+            self.fonts_dir, self.logs_dir, self.ai_cache_dir,
+            self.whisper_models_dir, self.mediapipe_dir
+        ]
+
+@dataclass
+class SubtitleConfig:
+    """Konfigurasi untuk subtitle dan styling (ASS)."""
+    font_name: str = "Poppins-Bold"
+    font_size: int = 14
+    margin_v: int = 50
+    primary_color: str = "&H00FFFFFF"    # Putih
+    secondary_color: str = "&H0000FFFF"  # Kuning
+    outline_color: str = "&H00000000"    # Hitam
+    back_color: str = "&H80000000"       # Transparan
+    karaoke_chunk_size: int = 1
+    bold: int = 1        # 1 = True, 0 = False (ASS Format)
+    italic: int = 0      # 1 = True, 0 = False
+
+@dataclass
+class WhisperConfig:
+    """Konfigurasi untuk model Whisper."""
+    language: str = "id"
+    initial_prompt: str = "Transkrip berikut adalah video YouTube berbahasa Indonesia. Gunakan ejaan baku dan tanda baca yang benar."
+    use_batched_pipeline: bool = True
+    log_prob_threshold: float = -1.0
+    compression_ratio_threshold: float = 2.4
+
+@dataclass
+class AppConfig():
+    """Konfigurasi global aplikasi."""
     paths: AppPaths = field(default_factory=AppPaths)
     
+    # Model AI Preferences
     gemini_models: List[str] = field(default_factory=lambda: [
-        "gemini-flash-latest",
-        "gemini-pro-latest",
         "gemini-2.5-flash",
-        "gemini-3.1-flash-lite-preview",
         "gemini-3-flash-preview",
-        "gemini-3.1-pro-preview"
-        ]    
-    )
+        "gemini-flash-latest",
+        "gemini-flash-lite-latest", 
+        "gemini-2.5-pro",
+        "gemini-3-pro-preview",      
+        "gemini-pro-latest",
+    ])
     
-    # FFmpeg Preference
-    ffmpeg_encoder_preference: Optional[str] = None
+    # FFmpeg & Hardware Acceleration
+    ffmpeg_encoder_preference: Optional[str] = None # 'h264_nvenc', 'libx264', dll.
     
-    # Motion Tracking
+    # Motion Tracking Parameters
     motion_window_size: int = 5
     motion_process_every_n_frames: int = 3
     
-    # Captioning
-    karaoke_chunk_size: int = 1
-    
-    # Subtitle Styling
+    # Sub-Configs
     subtitle: SubtitleConfig = field(default_factory=SubtitleConfig)
-    
-    # Whisper Model Strategy (Simple)
-    whisper_model_size: str = "small" 
-    whisper_device: str = "cpu"
-    whisper_compute_type: str = "int8"
+    whisper: WhisperConfig = field(default_factory=WhisperConfig)

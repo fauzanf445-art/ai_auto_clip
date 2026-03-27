@@ -2,9 +2,9 @@ import json
 from pathlib import Path
 from typing import Any, Optional
 
-from src.domain.interfaces import ICacheManager, ILogger
+from src.domain.interfaces import IUtilsCacheManager, ILogger
 
-class JsonFileCache(ICacheManager):
+class JsonFileCache(IUtilsCacheManager):
     """
     Implementasi ICacheManager menggunakan JSON file.
     Menggabungkan logika I/O langsung di sini untuk mengurangi kompleksitas.

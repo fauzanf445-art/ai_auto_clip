@@ -28,13 +28,13 @@ class GradioUI(IUserInterface):
     def log(self, msg: str): self.show_info(f"   -> {msg}")
     def show_step(self, msg: str): self.show_info(f"\n--- {msg.upper()} ---")
 
-def create_gradio_interface(process_fn: Callable[[str, str], Any], default_api_key: str = ""):
+def create_gradio_interface(process_fn: Callable[[str, str, bool], Any], default_api_key: str = ""):
     """
     Membuat dan mengembalikan objek Gradio Blocks (UI Definition).
     
     Args:
         process_fn: Fungsi callback yang akan dipanggil saat tombol diklik. 
-                   Signature: (url, api_key) -> (log_text, video_gallery)
+                   Signature: (url, api_key, retry_failed) -> (log_text, video_gallery)
         default_api_key: Nilai default untuk field API Key.
     """
     with gr.Blocks(title="HSU AI Clipper") as demo:
@@ -45,6 +45,7 @@ def create_gradio_interface(process_fn: Callable[[str, str], Any], default_api_k
             with gr.Column():
                 url_input = gr.Textbox(label="YouTube URL", placeholder="https://www.youtube.com/watch?v=...")
                 api_input = gr.Textbox(label="Gemini API Key", type="password", value=default_api_key)
+                retry_input = gr.Checkbox(label="Retry Failed Clips", value=False)
                 btn = gr.Button("🚀 Mulai Proses", variant="primary")
             
             with gr.Column():
@@ -53,7 +54,7 @@ def create_gradio_interface(process_fn: Callable[[str, str], Any], default_api_k
 
         btn.click(
             fn=process_fn,
-            inputs=[url_input, api_input],
+            inputs=[url_input, api_input, retry_input],
             outputs=[log_display, video_output]
         )
     

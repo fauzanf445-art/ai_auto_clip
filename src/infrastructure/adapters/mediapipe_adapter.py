@@ -7,10 +7,10 @@ from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 import numpy as np
 
-from src.domain.interfaces import IFaceTracker, TrackResult, IRetryHandler, ILogger
+from src.domain.interfaces import IMediapipeAdater, TrackResult, IRetryHandler, ILogger
 from src.domain.exceptions import VideoProcessingError
 
-class MediaPipeAdapter(IFaceTracker):
+class MediaPipeAdapter(IMediapipeAdater):
     """
     Implementasi IFaceTracker menggunakan MediaPipe Face Landmarker (Tasks API).
     """

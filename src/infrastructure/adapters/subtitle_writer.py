@@ -1,14 +1,13 @@
 from pathlib import Path
-from typing import List, Optional
+from typing import List
 
-from src.domain.interfaces import ISubtitleWriter, TranscriptionSegment, ILogger
-from src.domain.models import SubtitleConfig
+from src.domain.interfaces import ISubtitleWriter, TranscriptionSegment, ILogger, ISubtitleConfig
 from src.domain.exceptions import VideoProcessingError
 
 class AssSubtitleWriter(ISubtitleWriter):
 
-    def __init__(self, logger: ILogger, config: Optional[SubtitleConfig] = None):
-        self.config = config or SubtitleConfig()
+    def __init__(self, config: ISubtitleConfig, logger: ILogger) -> None:
+        self.config = config
         self.logger = logger
 
     def _format_timestamp(self, seconds: float) -> str:
@@ -42,11 +41,10 @@ Style: Karaoke,{self.config.font_name},{font_size},{self.config.primary_color},{
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
 
-    def write_karaoke_subtitles(
+    def write_ass_sub_style(
         self, 
         transcription_data: List[TranscriptionSegment], 
         output_path: str, 
-        chunk_size: int, 
         play_res_x: int, 
         play_res_y: int
     ) -> None:
@@ -66,6 +64,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             with open(output_p, "w", encoding="utf-8") as f:
                 f.write(self._generate_ass_header(play_res_x, play_res_y))
 
+                chunk_size = self.config.karaoke_chunk_size
                 word_chunks = [all_words[i:i + chunk_size] for i in range(0, len(all_words), chunk_size)]
 
                 for chunk in word_chunks:
