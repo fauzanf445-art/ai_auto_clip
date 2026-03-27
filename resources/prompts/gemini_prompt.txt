@@ -12,7 +12,9 @@ Focus on moments that are:
 Requirements:
 1. Quantity: Extract a minimum of 3 to 10 of the absolute best clips.
 2. Duration: Each clip must be between 30 and 180 seconds long.
-3. Timestamps: Provide your best estimate for start and end times in float seconds. Precision is not critical, as another system will align it, but be as close as possible.
+3. Timestamps: Provide start and end times in TOTAL SECONDS (float). 
+   IMPORTANT: DO NOT use "minutes.seconds" format (e.g., 1.30 for 1m 30s is WRONG). 
+   USE total seconds instead (e.g., 1m 30s must be 90.0). Example: 2 minutes 15 seconds = 135.0.
 4. Structure: A good clip should have a clear Hook, Insight/Climax, and Resolution.
 5. Language: All text output (title, caption) must be in Indonesian.
 6. Integrity: Aim for complete sentences or thoughts. Avoid cutting off in the middle of a breath or an unintelligible word.

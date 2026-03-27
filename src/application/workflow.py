@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import List, Tuple, Optional
+import threading
 
 # Import Config & UI
 from src.domain.models import Clip, ProjectState, VideoSummary
@@ -58,6 +59,10 @@ class Workflow:
 
             with self.manager_factory.create(video_metadata) as (safe_name, work_dir):                
                 ctx.ui.show_info(f"   -> Working Directory: {work_dir}")
+                
+                # Hybrid Loading: Mulai memuat model Whisper di background thread
+                threading.Thread(target=self.provider.warmup_ai, daemon=True).start()
+
                 generated_clips = self._process_url(ctx, url, work_dir, safe_name)
 
         except HSUAIClipError as e:
@@ -104,12 +109,10 @@ class Workflow:
         source_dir = work_dir / "source"
         source_dir.mkdir(parents=True, exist_ok=True)
 
-        audio_wav_path = self.provider.get_audio_for_analysis(url, source_dir, "full_audio")
+        audio_wav_path = self.provider.get_audio_for_analysis(url, source_dir, "fullaudio")
         
         if not audio_wav_path:
             raise MediaDownloadError("Gagal menyiapkan audio untuk analisis.")
-        
-        prompt_path = self.config.paths.prompt_file
         
         # Hybrid Lazy Init: Minta API Key jika belum tersedia di Context
         if not ctx.api_key:
@@ -119,9 +122,8 @@ class Workflow:
         summary = self.provider.analyze_video(
             url=url,
             temp_dir=source_dir,
-            filename_prefix="full_audio",
+            filename_prefix="fullaudio",
             cache_path=safe_name,
-            prompt_path=str(prompt_path),
             audio_path=str(audio_wav_path),
             api_key=ctx.api_key  # Passing API Key dari Context
         )

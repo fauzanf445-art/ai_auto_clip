@@ -19,21 +19,32 @@ class WhisperAdapter(IWhisperAdapter):
         self.device = device
         self.compute_type = compute_type
         self.logger = logger
+        self.download_root = download_root
         
-        self.logger.info(f"🚀 Initializing WhisperModel ({self.model_size}) on device: {self.device} ({self.compute_type})")
-        
+        # Model dan Pipeline tidak dimuat di awal (Lazy Loading)
+        self._model: Optional[WhisperModel] = None
+        self._pipeline: Optional[BatchedInferencePipeline] = None
+
+    def ensure_model(self):
+        """Memuat model ke memori hanya saat benar-benar dibutuhkan."""
+        if self._model is not None:
+            return
+
+        self.logger.info(f"🧠 Loading WhisperModel ({self.model_size}) to {self.device}...")
         try:
-            self.model = WhisperModel(
+            self._model = WhisperModel(
                 self.model_size, 
                 device=self.device, 
                 compute_type=self.compute_type, 
-                download_root=download_root
+                download_root=self.download_root
             )
-            # Inisialisasi Batched Pipeline untuk throughput tinggi (GPU Only recommended)
-            self.pipeline = BatchedInferencePipeline(model=self.model)
+            if self.config.use_batched_pipeline:
+                self._pipeline = BatchedInferencePipeline(model=self._model)
+            self.logger.info("✅ WhisperModel loaded successfully.")
         except Exception as e:
             self.logger.error(f"Failed to initialize WhisperModel: {e}", exc_info=True)
             raise TranscriptionError(f"Gagal menginisialisasi model Whisper: {e}", original_exception=e)
+
 
     @staticmethod
     def detect_hardware(logger: Optional[ILogger] = None) -> Dict[str, str]:
@@ -88,6 +99,9 @@ class WhisperAdapter(IWhisperAdapter):
         """
         Mentranskripsi file audio dan mengembalikan hasilnya sebagai Generator (Lazy Evaluation).
         """
+        # Trigger pemuatan model jika belum ada
+        self.ensure_model()
+
         use_batched = self.config.use_batched_pipeline
 
         # Jika ada targeted clip_timestamps, kita paksa non-batched untuk presisi word-level
@@ -98,15 +112,15 @@ class WhisperAdapter(IWhisperAdapter):
         self.logger.debug(f"🎙️ Memulai transkripsi: {audio_path} | Mode: {'Batched' if use_batched else 'Sequential'}")
 
         try:
-            if use_batched:
+            if use_batched and self._pipeline:
                 # Batched Mode (Default untuk full audio)
-                segments, info = self.pipeline.transcribe(audio_path, batch_size=3, word_timestamps=True) 
-            else:
+                segments, info = self._pipeline.transcribe(audio_path, batch_size=3, word_timestamps=True) 
+            elif self._model:
                 # Sequential Mode (Targeted & Detailed)
                 # Menggunakan argumen eksplisit, bukan dictionary unpacking
                 # clip_timestamps mengharapkan str atau list, default library adalah "0"
                 active_clip_ts = clip_timestamps if clip_timestamps is not None else "0"
-                segments, info = self.model.transcribe(
+                segments, info = self._model.transcribe(
                     audio=audio_path,
                     word_timestamps=True,
                     initial_prompt=initial_prompt or self.config.initial_prompt,
@@ -115,6 +129,9 @@ class WhisperAdapter(IWhisperAdapter):
                     log_prob_threshold=self.config.log_prob_threshold,
                     compression_ratio_threshold=self.config.compression_ratio_threshold
                 )
+            else:
+                # Pylance Guard: Memastikan variabel segments & info tidak unbound
+                raise TranscriptionError("Model Whisper tidak diinisialisasi dengan benar.")
             
             self.logger.info(f"📝 Transkripsi berjalan. Bahasa terdeteksi: {info.language} (Prob: {info.language_probability:.2f})")
             

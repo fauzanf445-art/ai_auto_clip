@@ -28,6 +28,11 @@ class ProviderService(IProviderService):
 
         return self.downloader.get_safe_title(url)
 
+    def warmup_ai(self) -> None:
+        """Memicu pemuatan model AI di latar belakang (Hybrid Lazy Loading)."""
+        self.logger.debug("🧠 Menyiapkan resources AI (Whisper)...")
+        self.transcriber.ensure_model()
+
     def get_audio_for_analysis(self, url: str, temp_dir: Path, filename_prefix: str) -> Path:
         """
         Memastikan file audio WAV yang siap untuk dianalisis tersedia.
@@ -55,7 +60,7 @@ class ProviderService(IProviderService):
         raise IOError("Gagal mendapatkan file audio WAV. File tidak ditemukan atau format salah setelah proses unduh.")
     
 
-    def get_prompt_for_analysis(self, temp_dir: str) -> str:
+    def get_prompt_for_analysis(self) -> str:
         """
         Implementasi Lazy Loading murni.
         Membaca disk hanya SATU KALI selama aplikasi berjalan.
@@ -83,7 +88,6 @@ class ProviderService(IProviderService):
         filename_prefix: str,
         cache_path: str, 
         api_key: str = "",
-        prompt_path: Optional[str] = None,
         audio_path: Optional[str] = None
     ) -> VideoSummary:
         # Gunakan cache_path (safe_name) untuk folder cache persisten
@@ -103,10 +107,11 @@ class ProviderService(IProviderService):
         raw_data = self.cache_manager.load(raw_ai_cache_file)
         if not raw_data:
             self.logger.info("🧠 Memanggil Gemini API untuk analisis baru...")
-            prompt = self.get_prompt_for_analysis(str(temp_dir))
+            prompt = self.get_prompt_for_analysis()
+            
             if audio_path is None:
                 audio_path = str(self.get_audio_for_analysis(url, temp_dir, filename_prefix))
-            
+
             try:
                 raw_response = self._fetch_gemini_analysis_raw(prompt, audio_path, api_key)
                 raw_data = raw_response.model_dump() # Simpan dalam bentuk dict/JSON
@@ -162,7 +167,6 @@ class ProviderService(IProviderService):
             if uploaded_file and hasattr(uploaded_file, 'name'):
                 self.analyzer.delete_file(uploaded_file.name, api_key=api_key)
 
-
     def _get_batch_clip_timestamps(self, clips: List[Clip], max_duration: float = 0.0) -> List[float]:
         """Mengumpulkan start,end kasar dari semua klip menjadi flat list untuk Whisper."""
         ts_list = []
@@ -193,32 +197,6 @@ class ProviderService(IProviderService):
             if matching_segments:
                 self._snap_single_clip_to_transcript(clip, matching_segments)
 
-    def _fetch_gemini_analysis(self, prompt: str, audio_path: str, api_key: str) -> VideoSummary:
-        """Helper untuk menjalankan analisis Gemini."""
-        
-        # 1. Upload File (Dilakukan sekali di luar loop retry)
-        # Ini mencegah upload ulang jika hanya generation yang timeout
-        uploaded_file = self.analyzer.upload_file(file_path=str(audio_path), api_key=api_key)
-        
-        try:
-            self.logger.debug("   -> Mengirim prompt ke Gemini...")
-            
-            # 2. Call Adapter with Schema (Menggunakan file object yang sudah diupload)
-            parsed_response = self.analyzer.generate_content(
-                prompt=prompt,
-                file_obj=uploaded_file,
-                api_key=api_key,
-                response_schema=AIVideoSummarySchema
-            )
-
-            # 3. Map DTO to Domain
-            return self._map_dto_to_domain(parsed_response)
-
-        finally:
-            # 4. Cleanup: Selalu hapus file dari server Google
-            if uploaded_file and hasattr(uploaded_file, 'name'):
-                self.analyzer.delete_file(uploaded_file.name, api_key=api_key)
-
     def _snap_single_clip_to_transcript(self, clip: Clip, segments: List[TranscriptionSegment]):
         """Menyelaraskan satu klip menggunakan segmen transkripsi lokal."""
         all_words = [w for seg in segments for w in seg.words]
@@ -242,14 +220,14 @@ class ProviderService(IProviderService):
         for i in range(search_start_idx, search_limit + 1):
             w = all_words[i]
             final_end_time = w.end
+            # Berhenti jika menemukan tanda baca akhir kalimat
             if any(p in w.word for p in ['.', '!', '?', '"']):
                 break
             # Deteksi Jeda Hening > 0.4 detik sebagai pemotong alami
-            if i < len(all_words) - 1 and (all_words[i+1].start - w.end > 0.45):
+            if i < len(all_words) - 1 and (all_words[i+1].start - w.end > 0.4):
                 break
 
-        # Tambahkan sedikit tail buffer (0.1s) agar suara tidak terpotong tajam
-        clip.end_time = final_end_time + 0.1
+        clip.end_time = final_end_time + 0.15 # Sedikit tail buffer agar tidak terpotong tajam
         clip.words = all_words # Simpan hasil transkripsi untuk subtitle nanti
 
     def load_project_state(self, work_dir: str) -> ProjectState:
