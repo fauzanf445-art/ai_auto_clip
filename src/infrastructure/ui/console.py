@@ -1,5 +1,6 @@
 import logging
 import getpass
+from typing import Any, Callable
 
 from src.domain.interfaces import IUserInterface
 
@@ -19,7 +20,7 @@ class ConsoleUI(IUserInterface):
         """Mengambil input sensitif (password/key) tanpa echo."""
         return getpass.getpass(f"👉 {prompt}: ").strip()
 
-    def show_info(self, msg: str):
+    def show_info(self, msg: str, level: str = "INFO"):
         """Menampilkan pesan informasi (bisa step, log, atau success)."""
         logging.info(msg)
 
@@ -27,7 +28,15 @@ class ConsoleUI(IUserInterface):
         """Menampilkan pesan error."""
         logging.error(f"❌ ERROR: {msg}")
 
-    # Compatibility Methods (Bisa dihapus nanti setelah refactor Workflow selesai)
-    # Agar tidak mematahkan kode lama seketika
+    @property
+    def log_output(self) -> str:
+        """Console UI tidak mengumpulkan output log dalam satu string buffer."""
+        return ""
+
     def log(self, msg: str): self.show_info(f"   -> {msg}")
+    
     def show_step(self, msg: str): self.show_info(f"🚀 [STEP] {msg}...")
+
+    def create_demo(self, process_fn: Callable, cleanup_fn: Callable, default_api_key: str = "") -> Any:
+        """Mode CLI tidak mendukung pembuatan Gradio Demo."""
+        return None

@@ -2,6 +2,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any, Union
 
+from src.application.context import SessionContext
 from src.domain.interfaces import IYoutubeAdapter, ILogger
 from src.domain.exceptions import MediaDownloadError, RateLimitError
 
@@ -36,7 +37,7 @@ class YouTubeAdapter(IYoutubeAdapter):
         else:
             self.logger.warning("⚠️ Executable 'node' tidak ditemukan/diberikan. Beberapa video YouTube mungkin gagal diunduh.")
 
-    def _execute_command(self, cmd: list, timeout: int = 300, require_stdout: bool = False) -> str:
+    def _execute_command(self, ctx: SessionContext, cmd: list, timeout: int = 300, require_stdout: bool = False) -> str:
         """Helper internal untuk menjalankan command subprocess dengan handling standar."""
         try:
             kwargs = {
@@ -66,7 +67,7 @@ class YouTubeAdapter(IYoutubeAdapter):
         except subprocess.TimeoutExpired as e:
             raise MediaDownloadError(f"Process timeout after {e.timeout}s") from e
 
-    def get_safe_title(self, url: str) -> str:
+    def get_safe_title(self, ctx: SessionContext, url: str) -> str:
         
         """
         Mengambil judul video yang aman digunakan sebagai nama folder.
@@ -81,14 +82,14 @@ class YouTubeAdapter(IYoutubeAdapter):
         ] + self.base_cli_args + [url]
 
         try:
-            self.logger.debug(f"   -> Getting safe title: {url}")
-            safe_title = self._execute_command(cmd, timeout=60, require_stdout=True)
+            ctx.logger.debug(f"   -> Getting safe title: {url}")
+            safe_title = self._execute_command(ctx, cmd, timeout=60, require_stdout=True)
             self._info_cache[url] = safe_title
             return safe_title
         except MediaDownloadError as e:
             raise MediaDownloadError(f"Gagal mendapatkan judul video: {e}") from e
 
-    def download_audio(self, url: str, output_dir: str, filename_prefix: str) -> str:
+    def download_audio(self, ctx: SessionContext, url: str, output_dir: str, filename_prefix: str) -> str:
         out_path = Path(output_dir)
         out_path.mkdir(parents=True, exist_ok=True)
         
@@ -102,8 +103,9 @@ class YouTubeAdapter(IYoutubeAdapter):
             url
         ] + self.base_cli_args
 
-        self.logger.debug(f"🎵 Mengunduh audio via CLI: {filename_prefix}...")
-        self._execute_command(cmd, timeout=300)
+        ctx.logger.debug(f"🎵 Mengunduh audio via CLI: {filename_prefix}...")
+        ctx.logger.info(f"⬇️ Mengunduh audio dari {url}...")
+        self._execute_command(ctx, cmd, timeout=300)
 
         for file_path in out_path.glob(f"{filename_prefix}.*"):
             if file_path.suffix not in ['.part', '.ytdl']:
@@ -111,7 +113,7 @@ class YouTubeAdapter(IYoutubeAdapter):
 
         raise MediaDownloadError(f"File output audio tidak ditemukan setelah download.")
 
-    def download_video_section(self, url: str, start: float, end: float, output_path: str) -> None:
+    def download_video_section(self, ctx: SessionContext, url: str, start: float, end: float, output_path: str) -> None:
         """
         Mengunduh bagian spesifik dari video YouTube menggunakan yt-dlp.
         """
@@ -135,6 +137,6 @@ class YouTubeAdapter(IYoutubeAdapter):
             url
         ]
 
-        self.logger.debug(f"✂️ Downloading CFR Segment: {Path(output_path).name} ({start}-{end}s)")
-        self._execute_command(cmd, timeout=300)
+        ctx.logger.debug(f"✂️ Downloading CFR Segment: {Path(output_path).name} ({start}-{end}s)")
+        self._execute_command(ctx, cmd, timeout=300)
         

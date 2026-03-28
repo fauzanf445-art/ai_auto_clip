@@ -1,6 +1,7 @@
 import time
 from typing import Any, Tuple, Type
 
+from src.application.context import SessionContext
 from src.domain.interfaces import IRetryHandler, ILogger
 
 class RetryHandler(IRetryHandler):
@@ -12,7 +13,7 @@ class RetryHandler(IRetryHandler):
         self.backoff_factor = backoff_factor
         self.retry_on = retry_on
 
-    def execute(self, func: Any, *args, **kwargs) -> Any:
+    def execute(self, ctx: SessionContext, func: Any, *args, **kwargs) -> Any:
         delay = self.initial_delay
         for attempt in range(1, self.max_attempts + 1):
             try:
@@ -24,9 +25,9 @@ class RetryHandler(IRetryHandler):
 
                 func_name = getattr(func, '__name__', 'Operation')
                 if attempt == self.max_attempts:
-                    self.logger.error(f"❌ {func_name} gagal total setelah {self.max_attempts} percobaan. Error: {e}")
+                    ctx.logger.error(f"❌ {func_name} gagal total setelah {self.max_attempts} percobaan. Error: {e}")
                     raise e
                 
-                self.logger.warning(f"⚠️ {func_name} gagal (percobaan {attempt}/{self.max_attempts}): {e}. Retry dalam {delay:.2f}s...")
+                ctx.logger.warning(f"⚠️ {func_name} gagal (percobaan {attempt}/{self.max_attempts}): {e}. Retry dalam {delay:.2f}s...")
                 time.sleep(delay)
                 delay *= self.backoff_factor

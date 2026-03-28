@@ -33,6 +33,7 @@ class ManagerService(IManagerService):
         # 2. Download Font
         fonts_dir = self.config.paths.fonts_dir
         self.utils.download(
+            None, # Global setup, no session context available
             "https://github.com/google/fonts/raw/main/ofl/poppins/Poppins-Bold.ttf",
             fonts_dir / "Poppins-Bold.ttf",
             "Font Utama (Poppins)"
@@ -41,6 +42,7 @@ class ManagerService(IManagerService):
         # 3. Download Model MediaPipe
         face_model_path = self.config.paths.face_landmarker_file
         self.utils.download(
+            None, # Global setup, no session context available
             "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
             face_model_path,
             "Model MediaPipe (Face Landmarker)"

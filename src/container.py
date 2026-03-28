@@ -1,5 +1,9 @@
-from src.config import AppConfig
+from typing import Optional
+
+# Konfigurasi
+from src.infrastructure.config import AppConfig
 from src.application.workflow import Workflow
+from src.infrastructure.ui.logging_config import TqdmLogger
 
 # Adapters
 from src.infrastructure.adapters.youtube_adapter import YouTubeAdapter
@@ -14,10 +18,8 @@ from src.infrastructure.common.filesystem import SystemHelper, WorkspaceManagerF
 from src.infrastructure.common.persistence import JsonFileCache
 from src.infrastructure.common.network import UrllibDownloader
 from src.infrastructure.common.text import RegexTextProcessor
-from src.infrastructure.common.resilience import RetryHandler
 
 from src.domain.exceptions import ExecutableNotFoundError
-from src.domain.interfaces import IProviderService, IEditorService, IWorkspaceFactory, ILogger
 
 # Services
 from src.application.services.provider_service import ProviderService
@@ -30,15 +32,21 @@ class Container:
     Composition Root yang menangani Dependency Injection.
     Sekarang mencakup ManagerService yang menangani integritas sistem secara mandiri.
     """
-    def __init__(self, config: AppConfig, logger: ILogger, keep_temp: bool = False):
-        self.config = config
-        self.keep_temp = keep_temp
-        self.logger = logger
+    def __init__(self, config: Optional[AppConfig] = None, clean_temp: bool = False, verbose: bool = False):
+        self.config = config or AppConfig()
+        self.clean_temp = clean_temp
+        
+        # Inisialisasi Logger secara internal berdasarkan config
+        self.logger = TqdmLogger(self.config.paths.log_file, verbose=verbose)
 
         self._init_infrastructure()
         self._setup_auth() 
         self._init_adapters()
         self._init_services()
+
+        # Bootstrap: Pastikan integritas sistem (folder & download aset) sebelum orkestrator berjalan
+        self.manager_service.ensure_system_integrity()
+
         self._init_orchestrator()
 
     def _init_infrastructure(self):
@@ -47,13 +55,12 @@ class Container:
         self.cache_manager = JsonFileCache(self.logger)
         self.file_downloader = UrllibDownloader(self.logger)
         self.text_processor = RegexTextProcessor()
-        self.retry_handler = RetryHandler(self.logger)        
         
         # Tetap menggunakan Factory untuk manajemen lifecycle workspace yang bersih
         self.workspace_factory = WorkspaceManagerFactory(
             self.config.paths.temp_dir, 
             self.logger, 
-            keep_temp_dirs=self.keep_temp
+            clean_on_exit=self.clean_temp
         )
 
     def _setup_auth(self):
@@ -66,14 +73,18 @@ class Container:
         ffmpeg_path = self.system.find_executable("ffmpeg")
         ytdlp_path = self.system.find_executable("yt-dlp")
         ffprobe_path = self.system.find_executable("ffprobe")
-        
-        node_path = self.system.find_executable("node")
+
+        # Node bersifat opsional untuk beberapa ekstraktor yt-dlp
+        try:
+            node_path = self.system.find_executable("node")
+        except ExecutableNotFoundError:
+            node_path = None
 
         self.yt_adapter = YouTubeAdapter(
             yt_dlp_path=ytdlp_path,
+            logger=self.logger,
             node_path=node_path,
             cookies_path=self.config.paths.cookie_file,
-            logger=self.logger
         )
         
         self.ffmpeg_adapter = FFmpegAdapter(
@@ -84,7 +95,6 @@ class Container:
         )
         
         self.gemini_adapter = GeminiAdapter(
-            api_key="", 
             model_names=self.config.gemini_models,
             logger=self.logger
         )
@@ -99,9 +109,6 @@ class Container:
         
         self.mp_adapter = MediaPipeAdapter(
             model_path=str(self.config.paths.face_landmarker_file), 
-            retry_handler=self.retry_handler,
-            window_size=self.config.motion_window_size,
-            process_every_n_frames=self.config.motion_process_every_n_frames,
             logger=self.logger
         )
 
@@ -139,7 +146,6 @@ class Container:
             processor=self.ffmpeg_adapter,
             tracker=self.mp_adapter,
             writer=self.subtitle_writer,
-            system_helper=self.system,
             fonts_dir=self.config.paths.fonts_dir,
             logger=self.logger
         )

@@ -5,6 +5,7 @@ import time
 from google import genai
 from google.genai import types
 
+from src.application.context import SessionContext
 from src.domain.interfaces import IGeminiAdapter, ILogger
 from src.domain.exceptions import (
     AnalysisError, 
@@ -14,10 +15,8 @@ from src.domain.exceptions import (
 )
 
 class GeminiAdapter(IGeminiAdapter):
-    def __init__(self, api_key: str, model_names: List[str], logger: ILogger):
-        self.api_key = api_key
+    def __init__(self, model_names: List[str], logger: ILogger):
         self.logger = logger
-        self._client: Optional[genai.Client] = None
         
         # Mendukung list model untuk failover
         self.model_names = [f"models/{m}" if not m.startswith("models/") else m for m in model_names]
@@ -33,24 +32,21 @@ class GeminiAdapter(IGeminiAdapter):
 
     # --- INTERNAL HELPERS ---
 
-    def _ensure_client(self, api_key: str = "") -> genai.Client:
+    def _ensure_client(self, ctx: SessionContext) -> genai.Client:
         """Lazy initialization dan reuse client instance untuk performa."""
-        active_key = api_key if api_key else self.api_key
-        if not active_key:
+        if not ctx.api_key:
             raise AuthenticationError("Gemini API Key kosong.")
         
-        if self._client is None:
-            self.logger.debug("🔌 Menginisialisasi Gemini Client baru...")
-            self._client = genai.Client(
-                api_key=active_key,
-                http_options=types.HttpOptions(
-                    timeout=60000,
-                    retry_options=self.retry_options
-                )
+        ctx.logger.debug("🔌 Menginisialisasi Gemini Client baru...")
+        return genai.Client(
+            api_key=ctx.api_key,
+            http_options=types.HttpOptions(
+                timeout=60000,
+                retry_options=self.retry_options
             )
-        return self._client
+        )
 
-    def _wait_for_file_active(self, client: genai.Client, file_name: str) -> Any:
+    def _wait_for_file_active(self, ctx: SessionContext, client: genai.Client, file_name: str) -> Any:
         """Menunggu file menjadi ACTIVE dengan exponential backoff."""
         poll_interval = 1.0 
         while True:
@@ -60,13 +56,13 @@ class GeminiAdapter(IGeminiAdapter):
             )
             
             if file_ref.state == types.FileState.ACTIVE:
-                self.logger.info(f"✅ File siap (ACTIVE): {file_ref.name}")
+                ctx.logger.info(f"✅ File siap (ACTIVE): {file_ref.name}")
                 return file_ref
             
             if file_ref.state == types.FileState.FAILED:
                 raise AnalysisError(f"File processing failed: {file_ref.error.message if file_ref.error else 'Unknown'}")
             
-            self.logger.debug(f"⏳ Status: {file_ref.state} (Cek kembali dalam {poll_interval}s)")
+            ctx.logger.debug(f"⏳ Status: {file_ref.state} (Cek kembali dalam {poll_interval}s)")
             time.sleep(poll_interval)
             poll_interval = min(poll_interval * 1.5, 10.0)
 
@@ -80,13 +76,13 @@ class GeminiAdapter(IGeminiAdapter):
         parts.append(types.Part.from_text(text=prompt))
         return parts
 
-    def _handle_gemini_error(self, e: Exception, context: str) -> NoReturn:
+    def _handle_gemini_error(self, ctx: SessionContext, e: Exception, context: str) -> NoReturn:
         """Menerjemahkan error SDK ke Domain Exceptions."""
         err_msg = str(e).lower()
         if isinstance(e, (AnalysisError, AuthenticationError, QuotaExceededError, ContentPolicyViolationError)):
             raise e
 
-        self.logger.error(f"❌ Gemini Error ({context}): {err_msg}")
+        ctx.logger.error(f"❌ Gemini Error ({context}): {err_msg}")
         if any(x in err_msg for x in ["401", "403", "api key not valid"]):
              raise AuthenticationError(f"Gagal Autentikasi: {err_msg}", original_exception=e)
         if any(x in err_msg for x in ["429", "exhausted", "quota"]):
@@ -98,9 +94,9 @@ class GeminiAdapter(IGeminiAdapter):
 
     # --- PUBLIC METHODS ---
 
-    def upload_file(self, file_path: str, api_key: str = "") -> Any:
+    def upload_file(self, ctx: SessionContext, file_path: str) -> Any:
         """Mengunggah file dan menunggu status ACTIVE."""
-        client = self._ensure_client(api_key)
+        client = self._ensure_client(ctx)
         path_obj = Path(file_path)
         
         if not path_obj.exists():
@@ -114,17 +110,17 @@ class GeminiAdapter(IGeminiAdapter):
                     http_options=types.HttpOptions(timeout=300000, retry_options=self.retry_options)
                 )
             )
-            self.logger.info(f"⏳ File terupload: {uploaded_file.name}. Menunggu pemrosesan...")
+            ctx.logger.info(f"⏳ File terupload: {uploaded_file.name}. Menunggu pemrosesan...")
             file_resource_name = uploaded_file.name
             if not file_resource_name:
                 raise AnalysisError("Gagal mendapatkan nama file dari server Google.")
-            return self._wait_for_file_active(client, file_resource_name)
+            return self._wait_for_file_active(ctx, client, file_resource_name)
         except Exception as e:
-            self._handle_gemini_error(e, "upload_file")
+            self._handle_gemini_error(ctx, e, "upload_file")
 
-    def generate_content(self, prompt: str, file_obj: Any = None, api_key: str = "", response_schema: Any = None) -> Union[str, Any]:
+    def generate_content(self, ctx: SessionContext, prompt: str, file_obj: Any = None, response_schema: Any = None) -> Union[str, Any]:
         """Eksekusi analisis dengan strategi Failover Model."""
-        client = self._ensure_client(api_key)
+        client = self._ensure_client(ctx)
         parts = self._prepare_payload(prompt, file_obj)
         
         # Konfigurasi JSON jika ada schema
@@ -139,7 +135,7 @@ class GeminiAdapter(IGeminiAdapter):
         # Mencoba setiap model dalam list satu per satu
         for model_name in (self.model_names or ["models/gemini-1.5-flash"]):
             try:
-                self.logger.debug(f"🧠 Menganalisis dengan {model_name}...")
+                ctx.logger.debug(f"🧠 Menganalisis dengan {model_name}...")
                 response = client.models.generate_content(
                     model=model_name,
                     contents=types.Content(role="user", parts=parts),
@@ -156,31 +152,24 @@ class GeminiAdapter(IGeminiAdapter):
                 last_error = e
                 if "safety" in str(e).lower() or "blocked" in str(e).lower():
                     break
-                self.logger.warning(f"⚠️ {model_name} bermasalah. Mencoba model cadangan...")
+                ctx.logger.warning(f"⚠️ {model_name} bermasalah. Mencoba model cadangan...")
                 continue
 
         if last_error:
-            self._handle_gemini_error(last_error, "generate_content_all_models_failed")
+            self._handle_gemini_error(ctx, last_error, "generate_content_all_models_failed")
         else:
             error_fallback = AnalysisError("Semua model gagal tanpa pengecekan spesifik.")
-            self._handle_gemini_error(error_fallback, "generate_content_unknown_failure")
+            self._handle_gemini_error(ctx, error_fallback, "generate_content_unknown_failure")
 
-    def delete_file(self, file_name: str, api_key: str = "") -> None:
+    def delete_file(self, ctx: SessionContext, file_name: str) -> None:
         """Menghapus file dari server."""
         try:
-            client = self._ensure_client(api_key)
+            client = self._ensure_client(ctx)
             client.files.delete(name=file_name)
-            self.logger.debug(f"🗑️ File dihapus: {file_name}")
+            ctx.logger.debug(f"🗑️ File dihapus: {file_name}")
         except Exception as e:
-            self.logger.warning(f"⚠️ Gagal menghapus file {file_name}: {e}")
+            ctx.logger.warning(f"⚠️ Gagal menghapus file {file_name}: {e}")
 
     def close(self) -> None:
-        """Pembersihan resource secara formal."""
-        if self._client:
-            try:
-                self._client.close()
-                self.logger.debug("🔌 Koneksi Gemini Client ditutup.")
-            except Exception as e:
-                self.logger.warning(f"⚠️ Gagal menutup client: {e}")
-            finally:
-                self._client = None
+        """Pembersihan resource (Stateless)."""
+        pass

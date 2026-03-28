@@ -46,6 +46,10 @@ class TqdmProgressReporter(IProgressReporter):
         bar = tqdm(total=total, desc=desc, unit=unit, leave=leave)
         return TqdmProgressBar(bar)
 
+    def set_logger(self, logger: ILogger):
+        """Reporter berbasis TQDM mencetak langsung ke konsol."""
+        pass
+
 # ==================================================================================
 # Logger-based Progress Reporter (for Web/Headless)
 # ==================================================================================
@@ -81,6 +85,9 @@ class LogProgressBar(IProgressBar):
 class LogProgressReporter(IProgressReporter):
     """Implementasi IProgressReporter yang menggunakan logger, cocok untuk mode non-interaktif."""
     def __init__(self, logger: ILogger):
+        self._logger = logger
+
+    def set_logger(self, logger: ILogger):
         self._logger = logger
 
     def sequence(self, iterable: Iterable, desc: str = "", unit: str = "it", total: Optional[int] = None) -> Iterable:

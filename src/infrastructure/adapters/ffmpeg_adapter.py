@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from typing import List, Optional, Callable, Tuple
 
+from src.application.context import SessionContext
 from src.domain.interfaces import IFfmpegAdapter, ILogger
 from src.domain.exceptions import VideoProcessingError
 
@@ -44,10 +45,10 @@ class FFmpegAdapter(IFfmpegAdapter):
         self._setup_encoder_definitions()
 
 
-    def is_gpu_enabled(self) -> bool:
+    def is_gpu_enabled(self, ctx: SessionContext) -> bool:
         """Mengembalikan True jika encoder yang aktif bukan CPU default."""
         if not self._codec_args:
-            self.initialize()
+            self.initialize(ctx)
         return self._video_args != self.CPU_VIDEO_ARGS
 
     def _setup_encoder_definitions(self):
@@ -69,7 +70,7 @@ class FFmpegAdapter(IFfmpegAdapter):
             'videotoolbox': ("Apple VideoToolbox", self.VIDEOTOOLBOX_ARGS)
         }
 
-    def get_video_duration(self, path: str) -> Optional[float]:
+    def get_video_duration(self, ctx: SessionContext, path: str) -> Optional[float]:
         """Validasi durasi video menggunakan ffprobe untuk memastikan file valid."""
         try:
             cmd = [
@@ -82,7 +83,7 @@ class FFmpegAdapter(IFfmpegAdapter):
             result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=10)
             return float(result.stdout.strip())
         except Exception as e:
-            self.logger.warning(f"Gagal memvalidasi durasi {path}: {e}")
+            ctx.logger.warning(f"Gagal memvalidasi durasi {path}: {e}")
             return None
 
     @staticmethod
@@ -95,11 +96,11 @@ class FFmpegAdapter(IFfmpegAdapter):
         # Di Windows, C:\path menjadi C:/path, lalu di-escape menjadi C\:/path
         return p.replace(':', '\\:')
 
-    def _is_encoder_functional(self, encoder_name: str, test_args: List[str]) -> bool:
+    def _is_encoder_functional(self, ctx: SessionContext, encoder_name: str, test_args: List[str]) -> bool:
         """
         Menjalankan verifikasi aktif untuk sebuah encoder dengan command FFmpeg singkat.
         """
-        self.logger.debug(f"   -> Memverifikasi fungsionalitas encoder: {encoder_name}...")
+        ctx.logger.debug(f"   -> Memverifikasi fungsionalitas encoder: {encoder_name}...")
         cmd = [
             self.bin_path, '-nostats', '-y',
             '-f', 'lavfi', '-i', 'color=s=64x64:rate=30', # Input virtual kecil
@@ -119,30 +120,30 @@ class FFmpegAdapter(IFfmpegAdapter):
                 timeout=10
             )
             if process.returncode == 0:
-                self.logger.debug(f"   ✅ Verifikasi {encoder_name} berhasil.")
+                ctx.logger.debug(f"   ✅ Verifikasi {encoder_name} berhasil.")
                 return True
             else:
-                self.logger.debug(f"   ⚠️ Verifikasi {encoder_name} gagal. FFmpeg stderr:\n{process.stderr}")
+                ctx.logger.debug(f"   ⚠️ Verifikasi {encoder_name} gagal. FFmpeg stderr:\n{process.stderr}")
                 return False
         except FileNotFoundError:
             # This happens if ffmpeg itself is not found
-            self.logger.error("❌ FFmpeg tidak ditemukan. Pastikan sudah terinstall dan ada di PATH sistem atau di folder 'bin'.")
+            ctx.logger.error("❌ FFmpeg tidak ditemukan. Pastikan sudah terinstall dan ada di PATH sistem atau di folder 'bin'.")
             raise
         except Exception as e:
-            self.logger.warning(f"   ⚠️ Exception saat verifikasi {encoder_name}: {e}")
+            ctx.logger.warning(f"   ⚠️ Exception saat verifikasi {encoder_name}: {e}")
             return False
 
-    def _determine_best_encoder(self) -> Tuple[str, List[str]]:
+    def _determine_best_encoder(self, ctx: SessionContext) -> Tuple[str, List[str]]:
         # Menggunakan definisi terpusat
         for name, friendly_name, args in self.HARDWARE_ENCODERS:
-            if self._is_encoder_functional(name, args):
-                self.logger.info(f"🚀 FFmpeg Adapter: Menggunakan akselerasi hardware {friendly_name}.")
+            if self._is_encoder_functional(ctx, name, args):
+                ctx.logger.info(f"🚀 FFmpeg Adapter: Menggunakan akselerasi hardware {friendly_name}.")
                 return friendly_name, args
 
-        self.logger.info("⚙️ FFmpeg Adapter: Tidak ada akselerasi hardware fungsional yang terdeteksi. Menggunakan CPU (libx264).")
+        ctx.logger.info("⚙️ FFmpeg Adapter: Tidak ada akselerasi hardware fungsional yang terdeteksi. Menggunakan CPU (libx264).")
         return "CPU", self.CPU_VIDEO_ARGS
 
-    def initialize(self):
+    def initialize(self, ctx: SessionContext):
         if self._codec_args:
             return
 
@@ -152,7 +153,7 @@ class FFmpegAdapter(IFfmpegAdapter):
         env_pref = os.getenv('FFMPEG_ENCODER', '').lower().strip()
         if env_pref and env_pref in self.ENCODER_PRESETS:
             name, args = self.ENCODER_PRESETS[env_pref]
-            self.logger.info(f"🚀 FFmpeg Adapter: Menggunakan encoder via Environment Variable ({name}).")
+            ctx.logger.info(f"🚀 FFmpeg Adapter: Menggunakan encoder via Environment Variable ({name}).")
             self._video_args = args
             video_args_determined = True
 
@@ -161,13 +162,13 @@ class FFmpegAdapter(IFfmpegAdapter):
             conf_pref = self.encoder_preference.lower().strip()
             if conf_pref in self.ENCODER_PRESETS:
                 name, args = self.ENCODER_PRESETS[conf_pref]
-                self.logger.info(f"🚀 FFmpeg Adapter: Menggunakan encoder via Config ({name}).")
+                ctx.logger.info(f"🚀 FFmpeg Adapter: Menggunakan encoder via Config ({name}).")
                 self._video_args = args
                 video_args_determined = True
 
         # Prioritas 3 (sebelumnya 4): Deteksi Otomatis (Fallback)
         if not video_args_determined:
-            friendly_name, self._video_args = self._determine_best_encoder()
+            friendly_name, self._video_args = self._determine_best_encoder(ctx)
         
         self._common_args = [
             '-r', '30', '-vsync', '1',
@@ -178,25 +179,25 @@ class FFmpegAdapter(IFfmpegAdapter):
         ]
         
         self._codec_args = self._common_args + self._video_args + self.AAC_AUDIO_ARGS
-        self.logger.debug(f"FFmpeg codec args initialized: {' '.join(self._codec_args)}")
+        ctx.logger.debug(f"FFmpeg codec args initialized: {' '.join(self._codec_args)}")
 
-    def _get_codec_args(self) -> List[str]:
+    def _get_codec_args(self, ctx: SessionContext) -> List[str]:
         if not self._codec_args:        
-            self.logger.debug("Lazy initialization: Detecting FFmpeg hardware support...")
-            self.initialize()
+            ctx.logger.debug("Lazy initialization: Detecting FFmpeg hardware support...")
+            self.initialize(ctx)
         return self._codec_args
 
     def _get_cpu_codec_args(self) -> List[str]:
         """Mengembalikan argumen codec khusus untuk fallback CPU."""
         return self._common_args + self.CPU_VIDEO_ARGS + self.AAC_AUDIO_ARGS
 
-    def _run_command(self, cmd: List[str], description: str, log_error: bool = True) -> None:
+    def _run_command(self, ctx: SessionContext, cmd: List[str], description: str, log_error: bool = True) -> None:
         """Helper untuk menjalankan subprocess dengan logging."""
         try:
             # Hapus argumen -nostats agar log bersih, karena stderr akan ditangkap
             cmd = [c for c in cmd if c != '-nostats']
             
-            self.logger.debug(f"Running FFmpeg: {' '.join(cmd)}")
+            ctx.logger.debug(f"Running FFmpeg: {' '.join(cmd)}")
             process = subprocess.run(
                 cmd,
                 stdout=subprocess.DEVNULL,
@@ -210,7 +211,7 @@ class FFmpegAdapter(IFfmpegAdapter):
             if process.returncode != 0:
                 error_tail = "\n".join(process.stderr.splitlines()[-20:])
                 if log_error:
-                    self.logger.error(f"❌ FFmpeg Error ({description}):\n... [Log dipotong] ...\n{error_tail}")
+                    ctx.logger.error(f"❌ FFmpeg Error ({description}):\n... [Log dipotong] ...\n{error_tail}")
                 raise VideoProcessingError(f"FFmpeg gagal ({description}): {error_tail}")
 
         except Exception as e:
@@ -218,16 +219,16 @@ class FFmpegAdapter(IFfmpegAdapter):
                 raise e
             raise VideoProcessingError(f"Exception sistem saat menjalankan FFmpeg ({description}): {e}")
 
-    def _run_with_fallback(self, build_cmd_func: Callable[[List[str]], List[str]], description: str) -> None:
+    def _run_with_fallback(self, ctx: SessionContext, build_cmd_func: Callable[[List[str]], List[str]], description: str) -> None:
         """
         Menjalankan command dengan mekanisme fallback ke CPU jika gagal.
         Tidak mengubah state instance secara permanen.
         """
         try:
             # Percobaan 1: Menggunakan argumen yang sudah di-cache (GPU atau CPU default)
-            codec_args = self._get_codec_args()
+            codec_args = self._get_codec_args(ctx)
             cmd = build_cmd_func(codec_args)
-            self._run_command(cmd, description, log_error=False)
+            self._run_command(ctx, cmd, description, log_error=False)
             return
 
         except VideoProcessingError as e:
@@ -236,15 +237,15 @@ class FFmpegAdapter(IFfmpegAdapter):
                 # Sudah CPU, tidak ada harapan lagi
                 raise e
 
-            self.logger.warning(f"⚠️ Deteksi kegagalan pada {description}. Mencoba fallback ke CPU... Error: {e}")
+            ctx.logger.warning(f"⚠️ Deteksi kegagalan pada {description}. Mencoba fallback ke CPU... Error: {e}")
             
             # Percobaan 2: Menggunakan argumen CPU secara eksplisit
             cpu_codec_args = self._get_cpu_codec_args()
             cmd_fallback = build_cmd_func(cpu_codec_args)
             
-            self._run_command(cmd_fallback, f"{description} (CPU Fallback)")
+            self._run_command(ctx, cmd_fallback, f"{description} (CPU Fallback)")
 
-    def render_final(self, video_path: str, audio_path: str, subtitle_path: Optional[str], output_path: str, fonts_dir: Optional[str] = None) -> None:
+    def render_final(self, ctx: SessionContext, video_path: str, audio_path: str, subtitle_path: Optional[str], output_path: str, fonts_dir: Optional[str] = None) -> None:
         """
         Merender hasil akhir: Video Tracked + Audio Asli + Subtitle (Burn-in).
         """
@@ -277,4 +278,4 @@ class FFmpegAdapter(IFfmpegAdapter):
             cmd.append(output_path)
             return cmd
 
-        self._run_with_fallback(build_cmd, f"Render Final: {Path(output_path).name}")
+        self._run_with_fallback(ctx, build_cmd, f"Render Final: {Path(output_path).name}")

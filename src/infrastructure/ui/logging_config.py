@@ -1,9 +1,10 @@
 import logging
 import logging.config
 from pathlib import Path
+from typing import Optional
 from tqdm import tqdm
 
-from src.domain.interfaces import ILogger
+from src.domain.interfaces import ILogger, IUserInterface
 
 class TqdmLoggingHandler(logging.Handler):
     """
@@ -75,6 +76,7 @@ class TqdmLogger(ILogger):
 
         logging.config.dictConfig(logging_config)
         self._logger = logging.getLogger("HSUAIClip")
+        self._logger.propagate = False
 
     def debug(self, msg: str, *args, **kwargs) -> None:
         self._logger.debug(msg, *args, **kwargs)
@@ -87,3 +89,58 @@ class TqdmLogger(ILogger):
 
     def error(self, msg: str, *args, **kwargs) -> None:
         self._logger.error(msg, *args, **kwargs)
+
+    def set_session_file(self, log_path: Path) -> None:
+        """Base logger (CLI) tidak memerlukan file sesi terpisah."""
+        pass
+
+class ContextualLogger(ILogger):
+    """
+    Routes logs to both a specific UI session and a global base logger.
+    Ensures that multi-user environments (like Gradio) don't mix logs.
+    """
+    def __init__(self, ui: IUserInterface, base_logger: ILogger):
+        self.ui = ui
+        self.base_logger = base_logger
+        self._session_logger: Optional[logging.Logger] = None
+
+    def set_session_file(self, log_path: Path):
+        """Mengarahkan log sesi ke file fisik di folder State."""
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Gunakan logger unik per instance agar aman di lingkungan multi-user
+        logger_name = f"Session_{id(self)}"
+        logger = logging.getLogger(logger_name)
+        logger.setLevel(logging.DEBUG)
+        logger.propagate = False
+        
+        if not logger.handlers:
+            fh = logging.FileHandler(log_path, encoding='utf-8')
+            fh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+            logger.addHandler(fh)
+        
+        self._session_logger = logger
+
+    def _log_session(self, level: int, msg: str, *args, **kwargs):
+        if self._session_logger:
+            self._session_logger.log(level, msg, *args, **kwargs)
+
+    def debug(self, msg: str, *args, **kwargs) -> None:
+        self._log_session(logging.DEBUG, msg, *args, **kwargs)
+        self.base_logger.debug(msg, *args, **kwargs)
+
+    def info(self, msg: str, *args, **kwargs) -> None:
+        formatted_msg = msg % args if args else msg
+        self.ui.show_info(formatted_msg, level="INFO")
+        self._log_session(logging.INFO, msg, *args, **kwargs)
+        self.base_logger.info(msg, *args, **kwargs)
+
+    def warning(self, msg: str, *args, **kwargs) -> None:
+        self._log_session(logging.WARNING, msg, *args, **kwargs)
+        self.base_logger.warning(msg, *args, **kwargs)
+
+    def error(self, msg: str, *args, **kwargs) -> None:
+        formatted_msg = msg % args if args else msg
+        self.ui.show_info(formatted_msg, level="ERROR")
+        self._log_session(logging.ERROR, msg, *args, **kwargs)
+        self.base_logger.error(msg, *args, **kwargs)

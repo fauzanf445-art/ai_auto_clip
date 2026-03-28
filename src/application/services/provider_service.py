@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
+from src.application.context import SessionContext
 from src.domain.interfaces import IYoutubeAdapter, IFfmpegAdapter, IUtilsCacheManager, ILogger, IProviderService, IGeminiAdapter, IWhisperAdapter
 from src.domain.models import VideoSummary, Clip, ProjectState, TranscriptionSegment
 from src.domain.exceptions import MediaDownloadError, RateLimitError, AnalysisError
@@ -19,21 +20,25 @@ class ProviderService(IProviderService):
         self.raw_ai_filename = raw_ai_filename
         self.summary_filename = summary_filename
         self.state_filename = state_filename
-        self.state_manager = ProjectStateManager(cache_manager, logger)
+        self.state_manager = ProjectStateManager(cache_manager)
 
         self._cached_prompt : Optional[str] = None
         self._padding_seconds = 1.5
 
-    def get_safe_folder_name(self, url: str) -> Optional[str]:
+    def get_safe_folder_name(self, ctx: SessionContext, url: str) -> Optional[str]:
+        return self.downloader.get_safe_title(ctx, url)
 
-        return self.downloader.get_safe_title(url)
-
-    def warmup_ai(self) -> None:
+    def warmup_ai(self, ctx: SessionContext) -> None:
         """Memicu pemuatan model AI di latar belakang (Hybrid Lazy Loading)."""
-        self.logger.debug("🧠 Menyiapkan resources AI (Whisper)...")
-        self.transcriber.ensure_model()
+        ctx.logger.debug("🧠 Menyiapkan resources AI (Whisper)...")
+        self.transcriber.ensure_model(ctx)
 
-    def get_audio_for_analysis(self, url: str, temp_dir: Path, filename_prefix: str) -> Path:
+    def close_ai(self, ctx: SessionContext) -> None:
+        """Membersihkan resource AI yang digunakan oleh provider."""
+        self.transcriber.close(ctx)
+        self.analyzer.close()
+
+    def get_audio_for_analysis(self, ctx: SessionContext, url: str, temp_dir: Path, filename_prefix: str) -> Path:
         """
         Memastikan file audio WAV yang siap untuk dianalisis tersedia.
         Mengatur alur: Cek Cache -> Unduh (langsung ke WAV) -> Selesai.
@@ -45,22 +50,21 @@ class ProviderService(IProviderService):
         out_path = temp_dir / f"{filename_prefix}.wav"
 
         if out_path.exists() and out_path.stat().st_size > 10240:
-            self.logger.debug(f"♻️ Audio WAV cached: {out_path.name}")
+            # Static logging via self.logger is okay for file-level info
             return out_path
 
-        downloaded_audio_path_str = self.downloader.download_audio(url, str(temp_dir), filename_prefix)
+        downloaded_audio_path_str = self.downloader.download_audio(ctx, url, str(temp_dir), filename_prefix)
         downloaded_path = Path(downloaded_audio_path_str)
 
         if downloaded_path.exists() and downloaded_path.suffix.lower() == '.wav':
-            if downloaded_path.resolve() != out_path.resolve():
-                 self.logger.warning(f"File audio diunduh sebagai {downloaded_path.name}, me-rename ke {out_path.name}")
-                 downloaded_path.rename(out_path)
+            if downloaded_path.resolve() != out_path.resolve():                
+                downloaded_path.rename(out_path)
             return out_path
         
         raise IOError("Gagal mendapatkan file audio WAV. File tidak ditemukan atau format salah setelah proses unduh.")
     
 
-    def get_prompt_for_analysis(self) -> str:
+    def get_prompt_for_analysis(self, ctx: SessionContext) -> str:
         """
         Implementasi Lazy Loading murni.
         Membaca disk hanya SATU KALI selama aplikasi berjalan.
@@ -69,25 +73,25 @@ class ProviderService(IProviderService):
             prompt_file = Path(self.prompt_path)
             if not prompt_file.exists():
                 error_msg = f"Critical Resource Missing: Prompt file tidak ditemukan di {prompt_file}"
-                self.logger.error(f"❌ {error_msg}")
+                ctx.logger.error(f"❌ {error_msg}")
                 raise FileNotFoundError(error_msg)
             
             try:
-                self.logger.debug(f"📖 Memuat prompt template dari disk: {prompt_file.name}")
+                ctx.logger.debug(f"📖 Memuat prompt template dari disk: {prompt_file.name}")
                 self._cached_prompt = prompt_file.read_text(encoding='utf-8')
             except Exception as e:
-                self.logger.error(f"❌ Gagal membaca file prompt: {str(e)}")
+                ctx.logger.error(f"❌ Gagal membaca file prompt: {str(e)}")
                 raise
         
         return self._cached_prompt
     
     def analyze_video(
         self, 
+        ctx: SessionContext,
         url: str, 
         temp_dir: Path, 
         filename_prefix: str,
         cache_path: str, 
-        api_key: str = "",
         audio_path: Optional[str] = None
     ) -> VideoSummary:
         # Gunakan cache_path (safe_name) untuk folder cache persisten
@@ -98,54 +102,55 @@ class ProviderService(IProviderService):
         summary_cache_file = str(project_cache_dir / self.summary_filename)
 
         # 1. Cek Tahap Akhir (Summary Ter-refine)
-        cached_summary = self._load_from_cache(summary_cache_file)
+        cached_summary = self._load_from_cache(ctx, summary_cache_file)
         if cached_summary:
-            self.logger.info(f"♻️  Menggunakan summary ter-refine dari cache.")
+            ctx.logger.info("♻️  Menggunakan summary ter-refine dari cache.")
             return cached_summary
 
         # 2. STAGE FETCH: Dapatkan Data Mentah dari Gemini
-        raw_data = self.cache_manager.load(raw_ai_cache_file)
+        raw_data = self.cache_manager.load(ctx, raw_ai_cache_file)
         if not raw_data:
-            self.logger.info("🧠 Memanggil Gemini API untuk analisis baru...")
-            prompt = self.get_prompt_for_analysis()
+            ctx.logger.info("🧠 Memanggil Gemini API untuk analisis baru...")
+            prompt = self.get_prompt_for_analysis(ctx)
             
             if audio_path is None:
-                audio_path = str(self.get_audio_for_analysis(url, temp_dir, filename_prefix))
+                audio_path = str(self.get_audio_for_analysis(ctx, url, temp_dir, filename_prefix))
 
             try:
-                raw_response = self._fetch_gemini_analysis_raw(prompt, audio_path, api_key)
+                raw_response = self._fetch_gemini_analysis_raw(ctx, prompt, audio_path)
                 raw_data = raw_response.model_dump() # Simpan dalam bentuk dict/JSON
-                self.cache_manager.save(raw_data, raw_ai_cache_file)
-                self.logger.debug(f"💾 Raw AI Response disimpan ke {self.raw_ai_filename}")
+                self.cache_manager.save(ctx, raw_data, raw_ai_cache_file)
+                ctx.logger.debug(f"💾 Raw AI Response disimpan ke {self.raw_ai_filename}")
             finally:
                 self.analyzer.close()
         else:
-            self.logger.info(f"♻️  Menggunakan Raw AI Response dari cache: {self.raw_ai_filename}")
+            ctx.logger.info(f"♻️  Menggunakan Raw AI Response dari cache: {self.raw_ai_filename}")
 
         # 3. STAGE REFINE: Whisper Snapping & Refinement
         # Convert Raw Data ke Domain Model dulu untuk diproses
-        summary = self._map_dto_to_domain(AIVideoSummarySchema(**raw_data))
+        summary = self._map_dto_to_domain(ctx, AIVideoSummarySchema(**raw_data))
         
         if audio_path is None:
-            audio_path = str(self.get_audio_for_analysis(url, temp_dir, filename_prefix))
+            audio_path = str(self.get_audio_for_analysis(ctx, url, temp_dir, filename_prefix))
             
-        refined_summary = self._refine_analysis_with_whisper(summary, audio_path)
+        refined_summary = self._refine_analysis_with_whisper(ctx, summary, audio_path)
         
         # Simpan hasil akhir yang sudah rapi
-        self._save_to_cache(refined_summary, summary_cache_file)
+        self._save_to_cache(ctx, refined_summary, summary_cache_file)
         return refined_summary
 
-    def _refine_analysis_with_whisper(self, summary: VideoSummary, audio_path: str) -> VideoSummary:
+    def _refine_analysis_with_whisper(self, ctx: SessionContext, summary: VideoSummary, audio_path: str) -> VideoSummary:
         """Tahap pengolahan transkripsi lokal untuk merapikan timestamp Gemini."""
         if not summary.clips:
             return summary
             
-        max_duration = self.processor.get_video_duration(audio_path) or 0.0
+        max_duration = self.processor.get_video_duration(ctx, audio_path) or 0.0
         batch_ts = self._get_batch_clip_timestamps(summary.clips, max_duration)
         
-        self.logger.info(f"⚡ Memulai Batch Transcription (Whisper) untuk {len(summary.clips)} segmen...")
+        ctx.logger.info(f"⚡ Memulai Batch Transcription (Whisper) untuk {len(summary.clips)} segmen...")
         
         all_segments = list(self.transcriber.transcribe(
+            ctx=ctx,
             audio_path=audio_path,
             clip_timestamps=batch_ts
         ))
@@ -153,19 +158,19 @@ class ProviderService(IProviderService):
         self._map_segments_to_clips(summary.clips, all_segments)
         return summary
 
-    def _fetch_gemini_analysis_raw(self, prompt: str, audio_path: str, api_key: str) -> AIVideoSummarySchema:
+    def _fetch_gemini_analysis_raw(self, ctx: SessionContext, prompt: str, audio_path: str) -> AIVideoSummarySchema:
         """Hanya bertugas memanggil API dan mengembalikan DTO mentah."""
-        uploaded_file = self.analyzer.upload_file(file_path=str(audio_path), api_key=api_key)
+        uploaded_file = self.analyzer.upload_file(ctx, file_path=str(audio_path))
         try:
             return self.analyzer.generate_content(
+                ctx=ctx,
                 prompt=prompt,
                 file_obj=uploaded_file,
-                api_key=api_key,
                 response_schema=AIVideoSummarySchema
             )
         finally:
             if uploaded_file and hasattr(uploaded_file, 'name'):
-                self.analyzer.delete_file(uploaded_file.name, api_key=api_key)
+                self.analyzer.delete_file(ctx, uploaded_file.name)
 
     def _get_batch_clip_timestamps(self, clips: List[Clip], max_duration: float = 0.0) -> List[float]:
         """Mengumpulkan start,end kasar dari semua klip menjadi flat list untuk Whisper."""
@@ -230,23 +235,23 @@ class ProviderService(IProviderService):
         clip.end_time = final_end_time + 0.15 # Sedikit tail buffer agar tidak terpotong tajam
         clip.words = all_words # Simpan hasil transkripsi untuk subtitle nanti
 
-    def load_project_state(self, work_dir: str) -> ProjectState:
+    def load_project_state(self, ctx: SessionContext, work_dir: str) -> ProjectState:
         """Memuat state proyek dari folder cache persisten."""
         project_cache_dir = self.ai_cache_dir / work_dir
         project_cache_dir.mkdir(parents=True, exist_ok=True)
         state_file = project_cache_dir / self.state_filename
-        return self.state_manager.load_state(state_file)
+        return self.state_manager.load_state(ctx, state_file)
 
-    def save_project_state(self, work_dir: str, state: ProjectState) -> None:
+    def save_project_state(self, ctx: SessionContext, work_dir: str, state: ProjectState) -> None:
         """Menyimpan state proyek ke folder cache persisten."""
         project_cache_dir = self.ai_cache_dir / work_dir
         project_cache_dir.mkdir(parents=True, exist_ok=True)
         state_file = project_cache_dir / self.state_filename
-        self.state_manager.save_state(state, state_file)
+        self.state_manager.save_state(ctx, state, state_file)
 
-    def _load_from_cache(self, path: str) -> Optional[VideoSummary]:
+    def _load_from_cache(self, ctx: SessionContext, path: str) -> Optional[VideoSummary]:
         """Helper internal untuk memuat JSON cache ke Domain Model."""
-        data = self.cache_manager.load(path)
+        data = self.cache_manager.load(ctx, path)
         if not data:
             return None
         
@@ -259,20 +264,20 @@ class ProviderService(IProviderService):
                 clips=clips
             )
         except Exception as e:
-            self.logger.warning(f"⚠️ Struktur cache tidak valid: {e}")
+            ctx.logger.warning(f"⚠️ Struktur cache tidak valid: {e}")
             return None
 
-    def _save_to_cache(self, summary: VideoSummary, path: str):
+    def _save_to_cache(self, ctx: SessionContext, summary: VideoSummary, path: str):
         data = {
             "context_keywords": summary.context_keywords,
             "clips": [c.to_dict() for c in summary.clips]
         }
         try:
-            self.cache_manager.save(data, path)
+            self.cache_manager.save(ctx, data, path)
         except Exception as e:
-            self.logger.warning(f"⚠️ Gagal menyimpan cache analisis: {e}")
+            ctx.logger.warning(f"⚠️ Gagal menyimpan cache analisis: {e}")
 
-    def _map_dto_to_domain(self, data: AIVideoSummarySchema) -> VideoSummary:
+    def _map_dto_to_domain(self, ctx: SessionContext, data: AIVideoSummarySchema) -> VideoSummary:
         """Mapping objek schema Pydantic ke objek Domain VideoSummary."""
         # data adalah instance AIVideoSummarySchema
         
@@ -289,7 +294,7 @@ class ProviderService(IProviderService):
                 # Clip.from_dict menangani default value
                 clips_list.append(Clip.from_dict(c_data))
             except Exception as e:
-                self.logger.warning(f"Skipping malformed clip data: {e}")
+                ctx.logger.warning(f"Skipping malformed clip data: {e}")
 
         if not clips_list:
             raise ValueError("No valid clips found in response")
@@ -304,25 +309,24 @@ class ProjectStateManager:
     Helper class untuk mengelola file state proyek (project_state.json).
     Memisahkan penyimpanan status pengerjaan (Mutable) dari hasil analisis AI (Immutable).
     """
-    def __init__(self, cache_manager: IUtilsCacheManager, logger: ILogger):
+    def __init__(self, cache_manager: IUtilsCacheManager):
         self.cache_manager = cache_manager
-        self.logger = logger
 
-    def load_state(self, path: Path) -> ProjectState:
+    def load_state(self, ctx: SessionContext, path: Path) -> ProjectState:
         """Memuat state proyek dari disk. Mengembalikan state kosong jika file tidak ada."""
-        data = self.cache_manager.load(str(path))
+        data = self.cache_manager.load(ctx, str(path))
         if not data:
             return ProjectState(video_source_url="")
         
         try:
             return ProjectState.from_dict(data)
         except Exception as e:
-            self.logger.warning(f"⚠️ Project State rusak atau usang: {e}. Membuat state baru.")
+            ctx.logger.warning(f"⚠️ Project State rusak atau usang: {e}. Membuat state baru.")
             return ProjectState(video_source_url="")
 
-    def save_state(self, state: ProjectState, path: Path) -> None:
+    def save_state(self, ctx: SessionContext, state: ProjectState, path: Path) -> None:
         """Menyimpan state proyek ke disk."""
         try:
-            self.cache_manager.save(state.to_dict(), str(path))
+            self.cache_manager.save(ctx, state.to_dict(), str(path))
         except Exception as e:
-            self.logger.error(f"❌ Gagal menyimpan project state ke {path.name}: {e}")
+            ctx.logger.error(f"❌ Gagal menyimpan project state ke {path.name}: {e}")

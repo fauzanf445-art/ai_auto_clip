@@ -8,6 +8,7 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.infrastructure.adapters.gemini_adapter import GeminiAdapter
+from src.application.context import SessionContext
 from src.domain.exceptions import (
     AnalysisError, 
     AuthenticationError, 
@@ -21,6 +22,11 @@ class TestGeminiAdapter(unittest.TestCase):
         self.api_key = "dummy_api_key"
         self.model_names = ["gemini-1.5-flash", "gemini-pro"]
         
+        # Mock SessionContext
+        self.mock_ctx = MagicMock(spec=SessionContext)
+        self.mock_ctx.api_key = self.api_key
+        self.mock_ctx.logger = MagicMock()
+
         # Patch library eksternal (google.genai)
         self.patcher_client = patch('src.infrastructure.adapters.gemini_adapter.genai.Client')
         self.patcher_types = patch('src.infrastructure.adapters.gemini_adapter.types')
@@ -34,7 +40,7 @@ class TestGeminiAdapter(unittest.TestCase):
         self.MockTypes.FileState.FAILED = "FAILED"
         
         # Inisialisasi Adapter
-        self.adapter = GeminiAdapter(self.api_key, self.model_names, self.mock_logger)
+        self.adapter = GeminiAdapter(self.model_names, self.mock_logger)
 
     def tearDown(self):
         self.patcher_client.stop()
@@ -42,28 +48,8 @@ class TestGeminiAdapter(unittest.TestCase):
 
     def test_initialization(self):
         """Memastikan adapter diinisialisasi dengan konfigurasi yang benar."""
-        self.assertEqual(self.adapter.api_key, "dummy_api_key")
         # Memastikan nama model dinormalisasi dengan prefix 'models/'
         self.assertEqual(self.adapter.model_names[0], "models/gemini-1.5-flash")
-        self.MockClient.assert_called_once()
-
-    def test_check_key_validity_success(self):
-        """Test validasi key sukses."""
-        mock_client_instance = MagicMock()
-        self.MockClient.return_value = mock_client_instance
-        
-        # Simulasi list models mengembalikan iterator tidak kosong
-        mock_client_instance.models.list.return_value = iter(["model1"])
-        
-        is_valid = GeminiAdapter.check_key_validity("valid_key")
-        self.assertTrue(is_valid)
-
-    def test_check_key_validity_failure(self):
-        """Test validasi key gagal (exception dari Google)."""
-        self.MockClient.side_effect = Exception("Invalid Key")
-        
-        is_valid = GeminiAdapter.check_key_validity("invalid_key")
-        self.assertFalse(is_valid)
 
     @patch('src.infrastructure.adapters.gemini_adapter.Path')
     def test_upload_file_blocking_success(self, MockPath):
@@ -86,11 +72,11 @@ class TestGeminiAdapter(unittest.TestCase):
         # Side effect mensimulasikan pemanggilan berulang di dalam while loop
         mock_client.files.get.side_effect = [state_processing, state_processing, state_active]
 
-        result = self.adapter.upload_file("dummy_path.wav")
+        result = self.adapter.upload_file(self.mock_ctx, "dummy_path.wav")
 
         self.assertEqual(result, state_active)
         self.assertEqual(mock_client.files.get.call_count, 3) # Loop berjalan 3 kali
-        self.mock_logger.info.assert_called() # Pastikan logging info dipanggil
+        self.mock_ctx.logger.info.assert_called() # Pastikan logging info dipanggil
 
     @patch('src.infrastructure.adapters.gemini_adapter.Path')
     def test_upload_file_failed_state(self, MockPath):
@@ -106,7 +92,7 @@ class TestGeminiAdapter(unittest.TestCase):
         mock_client.files.get.return_value = state_failed
 
         with self.assertRaises(AnalysisError) as context:
-            self.adapter.upload_file("fail.mp4")
+            self.adapter.upload_file(self.mock_ctx, "fail.mp4")
         
         self.assertIn("File processing failed", str(context.exception))
 
@@ -117,7 +103,7 @@ class TestGeminiAdapter(unittest.TestCase):
         mock_response.text = "AI Result"
         mock_client.models.generate_content.return_value = mock_response
 
-        result = self.adapter.generate_content("prompt")
+        result = self.adapter.generate_content(self.mock_ctx, "prompt")
         self.assertEqual(result, "AI Result")
 
     def test_generate_content_with_schema(self):
@@ -130,7 +116,7 @@ class TestGeminiAdapter(unittest.TestCase):
         mock_client.models.generate_content.return_value = mock_response
 
         dummy_schema = MagicMock()
-        result = self.adapter.generate_content("prompt", response_schema=dummy_schema)
+        result = self.adapter.generate_content(self.mock_ctx, "prompt", response_schema=dummy_schema)
         
         self.assertEqual(result, expected_json)
         # Verifikasi config schema dikirim
@@ -141,24 +127,24 @@ class TestGeminiAdapter(unittest.TestCase):
         """Test pemetaan Exception Google ke Domain Exception."""
         # 1. Auth Error
         with self.assertRaises(AuthenticationError):
-            self.adapter._handle_gemini_error(Exception("403 Forbidden"), "test")
+            self.adapter._handle_gemini_error(self.mock_ctx, Exception("403 Forbidden"), "test")
 
         # 2. Quota Error
         with self.assertRaises(QuotaExceededError):
-            self.adapter._handle_gemini_error(Exception("429 Resource exhausted"), "test")
+            self.adapter._handle_gemini_error(self.mock_ctx, Exception("429 Resource exhausted"), "test")
 
         # 3. Safety Error
         with self.assertRaises(ContentPolicyViolationError):
-            self.adapter._handle_gemini_error(Exception("Content blocked by safety filters"), "test")
+            self.adapter._handle_gemini_error(self.mock_ctx, Exception("Content blocked by safety filters"), "test")
 
         # 4. General Error
         with self.assertRaises(AnalysisError):
-            self.adapter._handle_gemini_error(Exception("Unknown error"), "test")
+            self.adapter._handle_gemini_error(self.mock_ctx, Exception("Unknown error"), "test")
 
     def test_delete_file(self):
         """Test penghapusan file."""
         mock_client = self.MockClient.return_value
-        self.adapter.delete_file("files/123")
+        self.adapter.delete_file(self.mock_ctx, "files/123")
         mock_client.files.delete.assert_called_with(name="files/123")
 
 if __name__ == '__main__':

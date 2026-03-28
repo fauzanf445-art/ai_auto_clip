@@ -1,7 +1,7 @@
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict
-
+from dotenv import load_dotenv
 
 from src.domain.interfaces import IAppPaths
 
@@ -11,7 +11,7 @@ class AppPaths(IAppPaths):
     Implementasi IAppPaths yang fleksibel menggunakan dictionary internal.
     Anda bisa mengubah nilai path di sini tanpa merusak kontrak interface.
     """
-    base_dir: Path = field(default_factory=lambda: Path(__file__).parent.parent.resolve())
+    base_dir: Path = field(default_factory=lambda: Path(__file__).parent.parent.parent.resolve())
 
     @property
     def temp_dir(self) -> Path: return self.base_dir / "Temp"
@@ -29,7 +29,10 @@ class AppPaths(IAppPaths):
     def logs_dir(self) -> Path: return self.base_dir / "logs"
 
     @property
-    def ai_cache_dir(self) -> Path: return self.temp_dir / "ai_cache"
+    def state_dir(self) -> Path: return self.base_dir / "State"
+
+    @property
+    def ai_cache_dir(self) -> Path: return self.state_dir / "ai_cache"
 
     @property
     def whisper_models_dir(self) -> Path: return self.models_dir / "whisper_models"
@@ -68,8 +71,8 @@ class AppPaths(IAppPaths):
         Digunakan oleh ManagerService untuk pembuatan folder otomatis.
         """
         return [
-            self.temp_dir, self.output_dir, self.models_dir, 
-            self.fonts_dir, self.logs_dir, self.ai_cache_dir,
+            self.temp_dir, self.output_dir, self.models_dir,
+            self.fonts_dir, self.logs_dir, self.state_dir, self.ai_cache_dir,
             self.whisper_models_dir, self.mediapipe_dir
         ]
 
@@ -101,6 +104,9 @@ class AppConfig():
     """Konfigurasi global aplikasi."""
     paths: AppPaths = field(default_factory=AppPaths)
     
+    def __post_init__(self):
+        load_dotenv(self.paths.env_file)
+
     # Model AI Preferences
     gemini_models: List[str] = field(default_factory=lambda: [
         "gemini-2.5-flash",
@@ -114,10 +120,6 @@ class AppConfig():
     
     # FFmpeg & Hardware Acceleration
     ffmpeg_encoder_preference: Optional[str] = None # 'h264_nvenc', 'libx264', dll.
-    
-    # Motion Tracking Parameters
-    motion_window_size: int = 5
-    motion_process_every_n_frames: int = 3
     
     # Sub-Configs
     subtitle: SubtitleConfig = field(default_factory=SubtitleConfig)

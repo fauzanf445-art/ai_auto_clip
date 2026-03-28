@@ -14,6 +14,7 @@ files/
 # Folder Output & Log Aplikasi
 Temp/
 Output/
+State/
 logs/
 *.log
 debug.log*

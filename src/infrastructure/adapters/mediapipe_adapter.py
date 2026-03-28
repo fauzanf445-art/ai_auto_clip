@@ -1,71 +1,98 @@
 from pathlib import Path
-from typing import Optional, Callable
+from typing import Optional, Callable, Tuple, Any
 
 import cv2
-import mediapipe as mp
-from mediapipe.tasks import python
-from mediapipe.tasks.python import vision
+from mediapipe.tasks.python.core.base_options import BaseOptions
+from mediapipe.tasks.python.vision.face_landmarker import FaceLandmarker, FaceLandmarkerOptions
+from mediapipe.tasks.python.vision.core.vision_task_running_mode import VisionTaskRunningMode
+from mediapipe.tasks.python.vision.core.image import Image, ImageFormat
+
 import numpy as np
 
-from src.domain.interfaces import IMediapipeAdater, TrackResult, IRetryHandler, ILogger
+from src.application.context import SessionContext
+from src.domain.interfaces import IMediapipeAdapter, TrackResult, ILogger
 from src.domain.exceptions import VideoProcessingError
 
-class MediaPipeAdapter(IMediapipeAdater):
+class MediaPipeAdapter(IMediapipeAdapter):
     """
     Implementasi IFaceTracker menggunakan MediaPipe Face Landmarker (Tasks API).
     """
 
-    def __init__(self, model_path: str, retry_handler: IRetryHandler, logger: ILogger, window_size: int = 5, process_every_n_frames: int = 3):
+    def __init__(self, model_path: str, logger: ILogger):
         self.model_path = model_path
-        self.retry_handler = retry_handler
         self.logger = logger
-        self.window_size = window_size
-        self.process_every_n_frames = process_every_n_frames
-        self._gpu_fallback_logged = False
 
-        # Cek model file
-        if not Path(model_path).exists():
-            raise VideoProcessingError(f"Model MediaPipe tidak ditemukan di: {model_path}")
+        self._verified_delegate: Optional[BaseOptions.Delegate] = None
+        self._landmarker: Optional[FaceLandmarker] = None
 
-    def track_and_crop(self, input_path: str, output_path: str, progress_callback: Optional[Callable[[int, int], None]] = None) -> TrackResult:
-        # Setup MediaPipe Tasks
-        BaseOptions = python.BaseOptions
-        FaceLandmarker = vision.FaceLandmarker
-        FaceLandmarkerOptions = vision.FaceLandmarkerOptions
-        VisionRunningMode = vision.RunningMode
+    def _setup_hardware_delegate(self, ctx: SessionContext) -> BaseOptions.Delegate:
+        """Mendeteksi hardware terbaik (GPU/CPU) satu kali dan menyimpan hasilnya."""
+        if self._verified_delegate is not None:
+            return self._verified_delegate
 
-        # 1. Inisialisasi Landmarker dengan Safe Fallback (GPU -> CPU)
-        landmarker = None
+        if not Path(self.model_path).exists():
+            raise VideoProcessingError(f"Model MediaPipe tidak ditemukan di: {self.model_path}")
+
         try:
-            # Coba inisialisasi dengan GPU
+            # Uji validitas GPU dengan membuat instance dummy singkat
+            ctx.logger.debug("🔍 MediaPipe: Memverifikasi dukungan GPU...")
             base_options = BaseOptions(model_asset_path=self.model_path, delegate=BaseOptions.Delegate.GPU)
-            options = FaceLandmarkerOptions(
-                base_options=base_options,
-                running_mode=VisionRunningMode.VIDEO,
-                num_faces=1,
-                min_face_detection_confidence=0.5,
-                min_face_presence_confidence=0.5,
-                min_tracking_confidence=0.5
-            )
-            landmarker = FaceLandmarker.create_from_options(options)
-            self.logger.info("🚀 MediaPipe: Menggunakan GPU Delegate.")
-        except Exception as e:
-            if not self._gpu_fallback_logged:
-                self.logger.warning(f"⚠️ MediaPipe GPU gagal. Fallback ke CPU (Pesan ini hanya muncul sekali).")
-                self._gpu_fallback_logged = True
+            options = FaceLandmarkerOptions(base_options=base_options, running_mode=VisionTaskRunningMode.VIDEO)
+            test_task = FaceLandmarker.create_from_options(options)
+            test_task.close()
             
-            self.logger.debug(f"⚠️ MediaPipe GPU gagal ({e}). Fallback ke CPU.")
-            # Fallback ke CPU
-            base_options = BaseOptions(model_asset_path=self.model_path, delegate=BaseOptions.Delegate.CPU)
-            options = FaceLandmarkerOptions(
-                base_options=base_options,
-                running_mode=VisionRunningMode.VIDEO,
-                num_faces=1,
-                min_face_detection_confidence=0.5,
-                min_face_presence_confidence=0.5,
-                min_tracking_confidence=0.5
-            )
-            landmarker = FaceLandmarker.create_from_options(options)
+            self._verified_delegate = BaseOptions.Delegate.GPU
+            ctx.logger.info("🚀 MediaPipe: GPU Delegate diverifikasi dan diaktifkan.")
+        except Exception as e:
+            ctx.logger.warning(f"⚠️ MediaPipe GPU tidak didukung atau gagal inisialisasi. Menggunakan CPU. Detail: {e}")
+            self._verified_delegate = BaseOptions.Delegate.CPU
+        
+        return self._verified_delegate
+
+    def _create_options(self, delegate: BaseOptions.Delegate) -> FaceLandmarkerOptions:
+        """Helper privat untuk membangun konfigurasi FaceLandmarkerOptions."""
+        return FaceLandmarkerOptions(
+            base_options=BaseOptions(model_asset_path=self.model_path, delegate=delegate),
+            running_mode=VisionTaskRunningMode.VIDEO,
+            num_faces=1,
+            min_face_detection_confidence=0.5,
+            min_face_presence_confidence=0.5,
+            min_tracking_confidence=0.5
+        )
+
+    def ensure_model(self, ctx: SessionContext) -> None:
+        """
+        Memastikan resource siap. Karena kita butuh reset timestamp, 
+        metode ini sekarang fokus pada penyiapan hardware delegate dan 
+        inisialisasi instance landmarker baru.
+        """
+        delegate = self._setup_hardware_delegate(ctx)
+        
+        # Tutup instance lama jika ada sebelum membuat yang baru (Reset State)
+        if self._landmarker:
+            self.close(ctx)
+            
+        options = self._create_options(delegate)
+        self._landmarker = FaceLandmarker.create_from_options(options)
+        ctx.logger.debug("🆕 MediaPipe: Instance Landmarker baru dibuat (Timestamp Reset).")
+
+    def close(self, ctx: SessionContext) -> None:
+        """Membersihkan resource MediaPipe secara formal."""
+        if self._landmarker:
+            try:
+                self._landmarker.close()
+                ctx.logger.debug("🧹 MediaPipe Landmarker ditutup.")
+            except Exception as e:
+                ctx.logger.warning(f"⚠️ Gagal menutup MediaPipe Landmarker: {e}")
+            finally:
+                self._landmarker = None
+
+    def track_and_crop(self, ctx: SessionContext, input_path: str, output_path: str, progress_callback: Optional[Callable[[int, int], None]] = None) -> TrackResult:
+        # Pastikan model sudah dimuat
+        self.ensure_model(ctx)
+        
+        if not self._landmarker:
+            raise VideoProcessingError("Gagal menginisialisasi MediaPipe Landmarker.")
 
         cap = None
         out = None
@@ -104,53 +131,29 @@ class MediaPipeAdapter(IMediapipeAdater):
             # EMA (Exponential Moving Average) Variables
             ema_alpha = 0.2  # Faktor smoothing (0.0 - 1.0)
             current_center_x = float(orig_width // 2) # Mulai dari tengah
+            actual_crop_width = min(out_width, orig_width)
             
             while cap.isOpened():
                 ret, frame = cap.read()
                 if not ret:
                     break
 
-                # 2. Deteksi pada setiap frame
-                # Konversi ke RGB untuk MediaPipe
-                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
-
-                # Hitung timestamp (Monotonically Increasing)
-                timestamp_ms = int((frame_idx * 1000) / fps)
-                if timestamp_ms <= last_timestamp_ms:
-                    timestamp_ms = last_timestamp_ms + 1
+                # 1. Hitung timestamp (Monotonically Increasing)
+                timestamp_ms = self._get_timestamp_ms(frame_idx, fps, last_timestamp_ms)
                 last_timestamp_ms = timestamp_ms
 
-                detection_result = landmarker.detect_for_video(mp_image, timestamp_ms)
+                # 2. Deteksi pada setiap frame
+                detection_result = self._process_detection(frame, timestamp_ms)
 
                 # 3. Update Center dengan Landmark Hidung (Index 4) & EMA
-                if detection_result.face_landmarks:
-                    # Ambil landmark hidung (index 4) sebagai referensi stabil
-                    nose_landmark = detection_result.face_landmarks[0][4]
-                    target_x = nose_landmark.x * orig_width
-                    
-                    # Terapkan EMA untuk pergerakan kamera yang halus
-                    current_center_x = (ema_alpha * target_x) + ((1 - ema_alpha) * current_center_x)
+                current_center_x = self._update_ema_center(detection_result, orig_width, current_center_x, ema_alpha)
 
                 # 4. Hitung Koordinat Crop dengan presisi dan batasan
-                # Logika ini memastikan hasil crop memiliki lebar yang benar dan berada dalam batas video.
-                actual_crop_width = min(out_width, orig_width)
-                
-                # Tentukan batas kiri (x1) dari area crop, berpusat pada subjek
-                x1 = int(current_center_x - actual_crop_width / 2)
-
-                # Jaga agar window crop tidak keluar dari batas video (clamping)
-                x1 = max(0, x1) # Cegah nilai negatif
-                x1 = min(x1, orig_width - actual_crop_width) # Cegah sisi kanan crop melebihi batas
-
-                x2 = x1 + actual_crop_width
+                x1, x2 = self._calculate_crop_boundaries(current_center_x, actual_crop_width, orig_width)
 
                 # 5. Crop & Resize Cerdas (Hanya jika perlu)
-                cropped_frame = frame[:, x1:x2]
-                
                 # Selalu resize untuk memastikan dimensi output konsisten.
-                # Menghilangkan optimasi sebelumnya untuk menjamin setiap frame sesuai target.
-                final_frame = cv2.resize(cropped_frame, (out_width, out_height), interpolation=cv2.INTER_AREA)
+                final_frame = cv2.resize(frame[:, x1:x2], (out_width, out_height), interpolation=cv2.INTER_AREA)
                 
                 out.write(final_frame)
 
@@ -165,13 +168,43 @@ class MediaPipeAdapter(IMediapipeAdater):
             )
 
         except Exception as e:
-            self.logger.error(f"Error during video processing: {e}", exc_info=True)
+            ctx.logger.error(f"Error during video processing: {e}", exc_info=True)
             raise VideoProcessingError(f"Gagal melakukan tracking wajah: {e}", original_exception=e)
         finally:
-            # 6. Cleanup Resource (Mencegah OOM)
-            if landmarker:
-                landmarker.close()
+            # Penting: Tutup landmarker setelah selesai satu file video
+            self.close(ctx)
             if cap:
                 cap.release()
             if out:
                 out.release()
+
+    def _get_timestamp_ms(self, frame_idx: int, fps: float, last_timestamp_ms: int) -> int:
+        """Hitung timestamp yang selalu naik untuk MediaPipe."""
+        timestamp_ms = int((frame_idx * 1000) / fps)
+        if timestamp_ms <= last_timestamp_ms:
+            timestamp_ms = last_timestamp_ms + 1
+        return timestamp_ms
+
+    def _process_detection(self, frame: np.ndarray, timestamp_ms: int) -> Any:
+        """Menjalankan inferensi MediaPipe pada frame tunggal."""
+        if self._landmarker is None:
+            raise VideoProcessingError("MediaPipe Landmarker belum diinisialisasi.")
+
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        mp_image = Image(image_format=ImageFormat.SRGB, data=rgb_frame)
+        return self._landmarker.detect_for_video(mp_image, timestamp_ms)
+
+    def _update_ema_center(self, detection_result: Any, orig_width: int, current_center_x: float, ema_alpha: float) -> float:
+        """Menghitung posisi tengah horizontal baru menggunakan EMA."""
+        if not detection_result.face_landmarks:
+            return current_center_x
+        
+        nose_landmark = detection_result.face_landmarks[0][4]
+        target_x = nose_landmark.x * orig_width
+        return (ema_alpha * target_x) + ((1 - ema_alpha) * current_center_x)
+
+    def _calculate_crop_boundaries(self, center_x: float, crop_width: int, orig_width: int) -> Tuple[int, int]:
+        """Menghitung batas kiri dan kanan crop dengan clamping agar tidak keluar frame."""
+        x1 = int(center_x - crop_width / 2)
+        x1 = max(0, min(x1, orig_width - crop_width))
+        return x1, x1 + crop_width

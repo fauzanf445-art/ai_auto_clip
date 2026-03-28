@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import List
 
+from src.application.context import SessionContext
 from src.domain.interfaces import ISubtitleWriter, TranscriptionSegment, ILogger, ISubtitleConfig
 from src.domain.exceptions import VideoProcessingError
 
@@ -17,14 +18,14 @@ class AssSubtitleWriter(ISubtitleWriter):
         secs = seconds % 60
         return f"{hours}:{minutes:02d}:{secs:05.2f}"
 
-    def _generate_ass_header(self, play_res_x: int, play_res_y: int) -> str:
+    def _generate_ass_header(self, ctx: SessionContext, play_res_x: int, play_res_y: int) -> str:
         """Menghasilkan header standar V4+ Styles untuk file .ass."""
         ref_height = 1080
         scale_factor = play_res_y / ref_height
         font_size = int(self.config.font_size * scale_factor)
         margin_v = int(self.config.margin_v * scale_factor)
 
-        self.logger.debug(f"   -> Menyesuaikan subtitle untuk resolusi {play_res_y}p. Font: {font_size}px, Margin-V: {margin_v}px")
+        ctx.logger.debug(f"   -> Menyesuaikan subtitle untuk resolusi {play_res_y}p. Font: {font_size}px, Margin-V: {margin_v}px")
 
         return f"""[Script Info]
 ScriptType: v4.00+
@@ -43,6 +44,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
     def write_ass_sub_style(
         self, 
+        ctx: SessionContext,
         transcription_data: List[TranscriptionSegment], 
         output_path: str, 
         play_res_x: int, 
@@ -52,17 +54,17 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         all_words = [word for segment in transcription_data for word in segment.words]
         
         if not all_words:
-            self.logger.warning("Tidak ada kata yang terdeteksi. File subtitle tidak akan dibuat.")
+            ctx.logger.warning("Tidak ada kata yang terdeteksi. File subtitle tidak akan dibuat.")
             return
 
-        self.logger.debug(f"📝 Menghasilkan subtitle dari {len(all_words)} kata...")
+        ctx.logger.debug(f"📝 Menghasilkan subtitle dari {len(all_words)} kata...")
 
         try:
             output_p = Path(output_path)
             output_p.parent.mkdir(parents=True, exist_ok=True)
 
             with open(output_p, "w", encoding="utf-8") as f:
-                f.write(self._generate_ass_header(play_res_x, play_res_y))
+                f.write(self._generate_ass_header(ctx, play_res_x, play_res_y))
 
                 chunk_size = self.config.karaoke_chunk_size
                 word_chunks = [all_words[i:i + chunk_size] for i in range(0, len(all_words), chunk_size)]
@@ -92,8 +94,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     dialogue_text = "".join(dialogue_parts)
                     f.write(f"Dialogue: 0,{start_str},{end_str},Karaoke,,0,0,0,,{dialogue_text.strip()}\n")
 
-            self.logger.debug(f"✅ Subtitle disimpan di: {output_path}")
+            ctx.logger.debug(f"✅ Subtitle disimpan di: {output_path}")
 
         except Exception as e:
-            self.logger.error(f"❌ Gagal menulis subtitle ke {output_path}: {e}")
+            ctx.logger.error(f"❌ Gagal menulis subtitle ke {output_path}: {e}")
             raise VideoProcessingError(f"Gagal menulis file subtitle: {e}", original_exception=e)
